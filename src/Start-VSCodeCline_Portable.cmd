@@ -57,25 +57,40 @@ $clineExtensionId = 'saoudrizwan.claude-dev'
 
 function Set-PortableLauncherShortcut {
     $launcherPath = [IO.Path]::GetFullPath($env:PORTABLE_LAUNCH_SELF)
-    $shortcutPath = Join-Path (Split-Path -LiteralPath $sourceRoot) 'Start-VSCodeCline_Portable.cmd - 起動.lnk'
-    $description = 'Portable launcher (relative target: .\src\Start-VSCodeCline_Portable.cmd)'
+    $shortcutDir = Split-Path -LiteralPath $sourceRoot
+    $shortcutPath = Join-Path $shortcutDir 'Start-VSCodeCline_Portable.cmd - 起動.lnk'
+    $relativeLauncher = Join-Path (Split-Path -Leaf $sourceRoot) (Split-Path -Leaf $launcherPath)
+    $cmdTemplate = '%SystemRoot%\System32\cmd.exe'
+    $expectedCmdPath = [Environment]::ExpandEnvironmentVariables($cmdTemplate)
+    $arguments = '/d /c ""' + $relativeLauncher + '" --menu"'
+    $iconLocation = '%SystemRoot%\System32\imageres.dll,-68'
+    $description = "Portable launcher (relative target: .\$relativeLauncher)"
     $shell = $null
     $shortcut = $null
     try {
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($shortcutPath)
+        $hasExpString = $false
+        if (Test-Path -LiteralPath $shortcutPath -PathType Leaf) {
+            $header = [IO.File]::ReadAllBytes($shortcutPath)
+            if ($header.Length -ge 0x18) {
+                $hasExpString = (([BitConverter]::ToUInt32($header, 0x14) -band 0x200) -ne 0)
+            }
+        }
         if ((Test-Path -LiteralPath $shortcutPath -PathType Leaf) -and
-            $shortcut.TargetPath -ieq $launcherPath -and
-            $shortcut.Arguments -ceq '--menu' -and
+            $hasExpString -and
+            $shortcut.TargetPath -ieq $expectedCmdPath -and
+            $shortcut.Arguments -ceq $arguments -and
             $shortcut.WorkingDirectory -eq '' -and
             $shortcut.WindowStyle -eq 1 -and
+            $shortcut.IconLocation -ieq $iconLocation -and
             $shortcut.Description -ceq $description) { return }
 
-        $shortcut.TargetPath = $launcherPath
-        $shortcut.RelativePath = '.\src\Start-VSCodeCline_Portable.cmd'
-        $shortcut.Arguments = '--menu'
+        $shortcut.TargetPath = $cmdTemplate
+        $shortcut.Arguments = $arguments
         $shortcut.WorkingDirectory = ''
         $shortcut.WindowStyle = 1
+        $shortcut.IconLocation = $iconLocation
         $shortcut.Description = $description
         $shortcut.Save()
         Write-Host "[設定] 起動ショートカットを作成／更新しました: $shortcutPath"

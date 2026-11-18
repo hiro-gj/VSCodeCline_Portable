@@ -27,7 +27,7 @@ function Invoke-PortableCodeCli([string[]]$CliArgs) {
     $info.EnvironmentVariables['CLINE_DIR'] = $cline
     $proc = [Diagnostics.Process]::Start($info)
     try {
-        $proc.WaitForExit()
+        Wait-PortableProcess $proc 'VS Code 拡張機能を処理しています'
         if ($proc.ExitCode -ne 0) {
             throw "VSCode CLI が終了コード $($proc.ExitCode) で失敗しました。"
         }

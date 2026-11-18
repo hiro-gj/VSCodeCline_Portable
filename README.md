@@ -2,7 +2,7 @@
 
 **VSCode / Cline ポータブル環境構築ツール**
 
-VSCode ZIP 版、日本語パック、Cline、Playwright MCP と専用 Chromium を、同じフォルダ配下で導入・起動・管理する Windows 用ランチャーです。
+VSCode ZIP 版、日本語パック、Cline、ポータブル Git（MinGit）、Playwright MCP と専用 Chromium を、同じフォルダ配下で導入・起動・管理する Windows 用ランチャーです。
 
 ## 動作条件
 
@@ -20,7 +20,8 @@ Node.js の処理には VSCode 内蔵のランタイムを使用します。
 3. 不足する構成要素の導入と動作確認が完了すると、日本語で VSCode が起動します。
 4. Cline の API プロバイダーや認証情報を設定します。
 
-初回導入では VSCode、日本語パック、Cline、Playwright MCP、専用 Chromium をダウンロードします。
+初回導入では VSCode、日本語パック、Cline、ポータブル Git（MinGit）、Playwright MCP、専用 Chromium をダウンロードします。
+既存のポータブル環境でも Git が未導入の場合は、次回のランチャー起動時に自動でインストールします。
 導入済みの場合も、起動のたびに構成を確認し、Chromium のヘッドレス起動と MCP の接続・ツール一覧取得を検証します。
 
 Cline の保存先を適用するため、通常は `Code.exe` を直接実行せず、このランチャー経由で起動してください。
@@ -68,6 +69,7 @@ VSCode の配置先は、常に **`src` の隣にある `VSCode` フォルダ**�
       ├─ user-data                         VSCode の設定・状態・ログ
       ├─ extensions                        日本語パック・Cline 等の拡張機能
       ├─ tmp                               導入・更新用の一時ファイルとキャッシュ
+      ├─ tools/git                         ポータブル Git（MinGit、実行ファイルは cmd/git.exe）
       └─ cline                             Cline の設定・履歴等
          ├─ data/settings/cline_mcp_settings.json
          ├─ compatibility/backups          互換修正時のバックアップ（該当時のみ）
@@ -89,6 +91,17 @@ VSCode と関連プロセスを終了してから、`src` と `VSCode` を同じ
 移動後の起動時に、ショートカットと管理対象 MCP の実行パスを更新します。
 ユーザーが追加した設定内の絶対パスは自動変換しません。
 認証情報や履歴を含む可能性があるため、保存先の取り扱いに注意してください。
+
+## ポータブル Git
+
+Git for Windows の公式リリースから軽量版の MinGit ZIP を取得し、公開された SHA-256 を検証したうえで自動インストールします。管理者権限やホスト PC への Git の事前インストールは不要です。
+保存先は、この README の隣にある `VSCode` フォルダ配下の `data\tools\git` です。
+
+- ランチャーから起動した VSCode、その統合ターミナル、Cline で `git --version` などの Git コマンドを実行できます。
+- PATH への追加は子プロセスだけに適用し、Windows のユーザー／システム PATH は変更しません。
+- 導入時にポータブル版 VSCode が起動済みだった場合は、すべて閉じてランチャーから起動し直してください。既存プロセスには新しい PATH が反映されません。
+- 導入済みの場合は再ダウンロードしません。Git の自動更新機能や管理メニューからの更新機能はありません。
+- MinGit はコマンド用の軽量版で、Git Bash／GUI は含みません。ユーザー名・メールアドレス・認証情報は自動設定しません。
 
 ## 管理メニュー
 

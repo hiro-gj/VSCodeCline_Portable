@@ -1,4 +1,4 @@
-# Portable bootstrap. Paths are derived by the launcher, never from a drive letter.
+﻿# Portable bootstrap. Paths are derived by the launcher, never from a drive letter.
 function Write-PortableJson([string]$Path, $Value) {
     $json = ($Value | ConvertTo-Json -Depth 50) + "`r`n"
     if ((Test-Path -LiteralPath $Path) -and [IO.File]::ReadAllText($Path) -ceq $json) { return }
@@ -49,7 +49,7 @@ function Invoke-PortableNode([string[]]$NodeArgs, [hashtable]$Environment = @{},
     $process = [Diagnostics.Process]::Start($info)
     try {
         $output = if ($CaptureOutput) { $process.StandardOutput.ReadToEnd() }
-        $process.WaitForExit()
+        Wait-PortableProcess $process 'ポータブル Node / MCP を処理しています'
         if ($process.ExitCode -ne 0) { throw "Portable Node command failed (exit $($process.ExitCode)): $($NodeArgs -join ' ')" }
         if ($CaptureOutput) { return $output }
     }
@@ -57,7 +57,9 @@ function Invoke-PortableNode([string[]]$NodeArgs, [hashtable]$Environment = @{},
 }
 
 function Install-PortableEnvironment {
+    Write-PortableStage 1 'フォルダと初期設定を確認しています'
     Initialize-Portable
+    Write-PortableStage 2 'VS Code 本体を確認しています'
     if (-not (Test-Path -LiteralPath $code -PathType Leaf)) {
         Write-Host '[Setup] Installing VS Code ZIP edition...'
         $current = Get-VSCodeMetadata $root
@@ -65,6 +67,7 @@ function Install-PortableEnvironment {
         $zip = Save-VSCodeReleasePackage $current $release
         if (-not (Install-VSCodeFromZip $zip $release.Sha256)) { throw 'VS Code installation was cancelled.' }
     }
+    Write-PortableStage 3 '日本語パックと Cline を確認しています'
     foreach ($id in @('MS-CEINTL.vscode-language-pack-ja', $clineExtensionId)) {
         if (-not (Get-InstalledExtensionVersion $id)) {
             Write-Host "[Setup] Installing $id ..."
@@ -72,12 +75,16 @@ function Install-PortableEnvironment {
             if (-not (Get-InstalledExtensionVersion $id)) { throw "Extension verification failed: $id" }
         }
     }
+    Set-PortableJapanese
     $argvPath = Join-Path $data 'argv.json'
     # VS Code writes JSON with comments here. Preserve existing user choices.
     if (-not (Test-Path -LiteralPath $argvPath)) {
         Write-PortableJson $argvPath ([ordered]@{ locale = 'ja'; 'enable-crash-reporter' = $false; 'crash-reporter-id' = [guid]::NewGuid().ToString() })
     }
 
+    Write-PortableStage 4 'ポータブル Git を確認しています'
+    Install-PortableGit
+    Write-PortableStage 5 'Playwright MCP を確認しています'
     $mcpRoot = Join-Path $cline 'mcp\playwright'
     [void][IO.Directory]::CreateDirectory($mcpRoot)
     foreach ($name in @('start-mcp.js', 'verify-mcp.js')) {
@@ -115,6 +122,7 @@ function Install-PortableEnvironment {
         Invoke-PortableNode -NodeArgs @($npmCli, 'install', '@playwright/mcp@0.0.85', '--prefix', $mcpRoot, '--cache', (Join-Path $data 'tmp\npm-cache'), '--no-audit', '--no-fund', '--ignore-scripts', '--bin-links=false') -WorkingDirectory $mcpRoot
         Write-PortableJson $mcpMarker @{ version = '0.0.85' }
     }
+    Write-PortableStage 6 'ポータブル Chromium を確認しています'
     $browserPath = Join-Path $mcpRoot 'browsers'
     $browserMarker = Join-Path $browserPath 'portable-install.json'
     $playwrightPackage = [IO.File]::ReadAllText((Join-Path $mcpRoot 'node_modules\playwright\package.json')) | ConvertFrom-Json
@@ -141,6 +149,8 @@ function Install-PortableEnvironment {
         Write-PortableJson $browserMarker @{ version = $playwrightPackage.version }
     }
     Initialize-Portable
-    Invoke-PortableNode @((Join-Path $mcpRoot 'verify-mcp.js'))
-    Write-Host "[Ready] Portable VS Code / Japanese / Cline / Playwright MCP: $root" -ForegroundColor Green
+    Write-PortableStage 7 'ブラウザーと MCP の動作を確認しています'
+    try { Invoke-PortableNode @((Join-Path $mcpRoot 'verify-mcp.js')) }
+    finally { Write-Progress -Id 10 -Activity 'ポータブル環境の準備' -Completed }
+    Write-Host "[Ready] Portable VS Code / Japanese / Git / Cline / Playwright MCP: $root" -ForegroundColor Green
 }

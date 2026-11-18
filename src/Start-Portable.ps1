@@ -8,6 +8,8 @@ function Start-Portable([string[]]$Targets) {
         throw "Code.exe が見つかりません: $code （メニュー [6] から導入・更新できます）"
     }
     Initialize-Portable
+    Write-Host '[起動中...] 日本語表示とポータブル Git を準備しています。'
+    Set-PortableJapanese
     $info = New-Object Diagnostics.ProcessStartInfo
     $info.FileName = $code
     $info.WorkingDirectory = $root
@@ -20,6 +22,7 @@ function Start-Portable([string[]]$Targets) {
         }
     }
     $info.EnvironmentVariables['CLINE_DIR'] = $cline
+    Set-PortableGitEnvironment $info
     # Electron can attach to its parent's console even after the launcher exits.
     # A console-free PowerShell broker prevents VSCode from retaining this window.
     $info.EnvironmentVariables['PORTABLE_CHILD_CODE'] = $code
@@ -52,7 +55,7 @@ catch { exit 1 }
     Write-Host 'ポータブル版 VSCode を起動しています...'
     $process = [Diagnostics.Process]::Start($info)
     try {
-        $process.WaitForExit()
+        Wait-PortableProcess $process 'VS Code を起動しています'
         if ($process.ExitCode -ne 0) {
             throw "起動処理が終了コード $($process.ExitCode) で失敗しました。ログ: $data\user-data\logs"
         }

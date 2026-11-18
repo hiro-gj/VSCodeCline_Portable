@@ -22,6 +22,7 @@ param(
 
 [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
 $ErrorActionPreference = 'Stop'
+Write-Host '[起動中...] ポータブル環境を確認しています。初回はダウンロードに時間がかかります。'
 # Read raw batch arguments as data, never as PowerShell source code.
 if ($env:PORTABLE_LAUNCH_ARGS) {
     Add-Type -TypeDefinition @"
@@ -115,6 +116,8 @@ $portableScriptFiles = @(
     'Show-UpdateMenu.ps1'
     'Show-MainMenu.ps1'
     'Install-PortableEnvironment.ps1'
+    'Set-PortableJapanese.ps1'
+    'Install-PortableGit.ps1'
 )
 
 try {
@@ -140,6 +143,7 @@ try {
     }
 }
 catch {
+    Write-Progress -Id 10 -Activity 'ポータブル環境の準備' -Completed
     Write-Host "[エラー] $($_.Exception.Message)" -ForegroundColor Red
     exit 1
 }

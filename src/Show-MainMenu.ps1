@@ -16,6 +16,7 @@ function Show-MainMenu {
         Write-Host "  対象フォルダ : $root"
         Write-Host "  VSCode 本体  : $vsMainLabel"
         Write-Host "  Cline 拡張   : $clineMainLabel"
+        Write-Host "  Git コマンド : $data\tools\git\cmd\git.exe"
         Write-Host "  VSCodeデータ : $data\user-data"
         Write-Host "  一時フォルダ : $data\tmp"
         Write-Host "  Clineルート  : $cline （バッチ経由の起動時に適用）"

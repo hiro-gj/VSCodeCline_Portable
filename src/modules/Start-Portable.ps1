@@ -10,19 +10,16 @@ function Start-Portable([string[]]$Targets) {
     Initialize-Portable
     Write-Host '[起動中...] 日本語表示とポータブル Git を準備しています。'
     Set-PortableJapanese
+    $alreadyRunning = @(Get-RunningPortableProcesses $root)
+    if ($alreadyRunning.Count -gt 0) {
+        Write-Host '[注意] 既にポータブル版 VSCode が稼働中です。ランチャー外（Code.exe 直接実行等）から起動していた場合は、一度すべて閉じてから再実行してください。' -ForegroundColor Yellow
+    }
     $info = New-Object Diagnostics.ProcessStartInfo
     $info.FileName = $code
     $info.WorkingDirectory = $root
     $info.UseShellExecute = $false
     $info.Arguments = (@((@('--locale', 'ja') + @($Targets | Where-Object { -not [string]::IsNullOrEmpty($_) })) | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' ')
-    # Only the child environment is modified; never write User/Machine variables.
-    foreach ($key in @($info.EnvironmentVariables.Keys)) {
-        if ($key -like 'VSCODE_*' -or $key -like 'CLINE_*' -or $key -eq 'ELECTRON_RUN_AS_NODE') {
-            $info.EnvironmentVariables.Remove($key)
-        }
-    }
-    $info.EnvironmentVariables['CLINE_DIR'] = $cline
-    Set-PortableGitEnvironment $info
+    Set-PortableChildEnvironment -Info $info -IncludeGitPath
     # Electron can attach to its parent's console even after the launcher exits.
     # A console-free PowerShell broker prevents VSCode from retaining this window.
     $info.EnvironmentVariables['PORTABLE_CHILD_CODE'] = $code

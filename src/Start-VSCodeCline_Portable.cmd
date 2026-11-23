@@ -22,6 +22,25 @@ param(
 
 [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
 $ErrorActionPreference = 'Stop'
+
+# 通常版からの設定引き継ぎ（Copy-Optional.ps1）用にホスト環境変数を退避
+$script:HostUserProfile = $env:USERPROFILE
+$script:HostAppData     = $env:APPDATA
+
+$sourceRoot  = Split-Path -LiteralPath $env:PORTABLE_LAUNCH_SELF
+$modulesRoot = Join-Path $sourceRoot 'modules'
+$root        = [IO.Path]::GetFullPath((Join-Path $sourceRoot '..\VSCode'))
+$code        = Join-Path $root 'Code.exe'
+$data        = Join-Path $root 'data'
+$cline       = Join-Path $data 'home\.cline'
+$clineExtensionId = 'saoudrizwan.claude-dev'
+
+# Add-Type (csc.exe) の一時ファイルがホスト %TEMP% へ書き出されるのを防ぐため先行設定
+$portableTmp = Join-Path $data 'tmp'
+[void][IO.Directory]::CreateDirectory($portableTmp)
+$env:TEMP = $portableTmp
+$env:TMP  = $portableTmp
+
 Write-Host '[起動中...] ポータブル環境を確認しています。初回はダウンロードに時間がかかります。'
 # Read raw batch arguments as data, never as PowerShell source code.
 if ($env:PORTABLE_LAUNCH_ARGS) {
@@ -48,13 +67,6 @@ public static class PortableArguments {
 "@
     $OpenPaths = [PortableArguments]::Parse($env:PORTABLE_LAUNCH_ARGS)
 }
-
-$sourceRoot = Split-Path -LiteralPath $env:PORTABLE_LAUNCH_SELF
-$root = [IO.Path]::GetFullPath((Join-Path $sourceRoot '..\VSCode'))
-$code = Join-Path $root 'Code.exe'
-$data = Join-Path $root 'data'
-$cline = Join-Path $data 'cline'
-$clineExtensionId = 'saoudrizwan.claude-dev'
 
 function Set-PortableLauncherShortcut {
     $launcherPath = [IO.Path]::GetFullPath($env:PORTABLE_LAUNCH_SELF)
@@ -122,7 +134,7 @@ $portableScriptFiles = @(
 
 try {
     foreach ($scriptFile in $portableScriptFiles) {
-        $scriptPath = Join-Path $sourceRoot $scriptFile
+        $scriptPath = Join-Path $modulesRoot $scriptFile
         if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
             throw "必要なスクリプトファイルが見つかりません: $scriptPath"
         }

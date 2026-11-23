@@ -18,13 +18,7 @@ function Invoke-PortableCodeCli([string[]]$CliArgs) {
     $info.WorkingDirectory = $root
     $info.UseShellExecute = $false
     $info.Arguments = (@($fullArgs | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' ')
-    foreach ($key in @($info.EnvironmentVariables.Keys)) {
-        if ($key -like 'VSCODE_*' -or $key -like 'CLINE_*') {
-            $info.EnvironmentVariables.Remove($key)
-        }
-    }
-    $info.EnvironmentVariables['ELECTRON_RUN_AS_NODE'] = '1'
-    $info.EnvironmentVariables['CLINE_DIR'] = $cline
+    Set-PortableChildEnvironment -Info $info -ExtraEnvironment @{ ELECTRON_RUN_AS_NODE = '1' }
     $proc = [Diagnostics.Process]::Start($info)
     try {
         Wait-PortableProcess $proc 'VS Code 拡張機能を処理しています'

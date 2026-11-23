@@ -21,8 +21,10 @@ function Copy-FromStandardEnvironment {
     Write-Host 'コピー先をバックアップしてください。設定内の絶対パスは自動変換されません。'
     if (-not (Confirm-Action '引き継ぎメニューへ進みますか？')) { return $false }
     Initialize-Portable
-    Copy-Optional 'VSCode ユーザー設定' "$env:APPDATA\Code\User" "$data\user-data\User"
-    Copy-Optional 'VSCode 拡張機能' "$env:USERPROFILE\.vscode\extensions" "$data\extensions"
-    Copy-Optional 'Cline 設定' "$env:USERPROFILE\.cline\data\settings" "$cline\data\settings"
+    $srcAppData     = if ($script:HostAppData)     { $script:HostAppData }     else { $env:APPDATA }
+    $srcUserProfile = if ($script:HostUserProfile) { $script:HostUserProfile } else { $env:USERPROFILE }
+    Copy-Optional 'VSCode ユーザー設定' (Join-Path $srcAppData 'Code\User')               (Join-Path $data 'user-data\User')
+    Copy-Optional 'VSCode 拡張機能'     (Join-Path $srcUserProfile '.vscode\extensions')  (Join-Path $data 'extensions')
+    Copy-Optional 'Cline 設定'          (Join-Path $srcUserProfile '.cline\data\settings') (Join-Path $cline 'data\settings')
     return $true
 }

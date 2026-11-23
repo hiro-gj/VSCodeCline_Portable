@@ -1,15 +1,32 @@
 ﻿# Run with Windows PowerShell 5.1; no external test framework required.
 $ErrorActionPreference = 'Stop'
-$sourceRoot = $PSScriptRoot
-foreach ($name in @('Common-Helpers.ps1', 'Install-PortableEnvironment.ps1', 'Set-PortableJapanese.ps1', 'Install-PortableGit.ps1')) {
-    . (Join-Path $sourceRoot $name)
+$modulesRoot = $PSScriptRoot
+$sourceRoot  = Split-Path -LiteralPath $modulesRoot
+$repoParent  = Split-Path -LiteralPath $sourceRoot
+foreach ($name in @('Common-Helpers.ps1', 'Initialize-Portable.ps1', 'Install-PortableEnvironment.ps1', 'Set-PortableJapanese.ps1', 'Install-PortableGit.ps1')) {
+    . (Join-Path $modulesRoot $name)
 }
 function Assert($Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
-$sandbox = Join-Path ([IO.Path]::GetTempPath()) ('portable-tests-' + [guid]::NewGuid().ToString('N'))
+
+$vscodeDir   = Join-Path $repoParent 'VSCode'
+$hadVSCode   = Test-Path -LiteralPath $vscodeDir
+$testTmpBase = Join-Path $vscodeDir 'data\tmp'
+[void][IO.Directory]::CreateDirectory($testTmpBase)
+$sandbox = Join-Path $testTmpBase ('portable-tests-' + [guid]::NewGuid().ToString('N'))
 $data = Join-Path $sandbox 'data'
 $root = $sandbox
 $code = Join-Path $root 'Code.exe'
+$cline = Join-Path $data 'home\.cline'
+
 try {
+    # 1. Verify src and src\modules structure
+    $looseFiles = @(Get-ChildItem -LiteralPath $sourceRoot -File | Where-Object { $_.Name -ine 'Start-VSCodeCline_Portable.cmd' })
+    Assert ($looseFiles.Count -eq 0) 'src root must contain only Start-VSCodeCline_Portable.cmd'
+    Assert (Test-Path -LiteralPath (Join-Path $modulesRoot 'start-mcp.js') -PathType Leaf) 'start-mcp.js missing in src\modules'
+    Assert (Test-Path -LiteralPath (Join-Path $modulesRoot 'verify-mcp.js') -PathType Leaf) 'verify-mcp.js missing in src\modules'
+    Assert (Test-Path -LiteralPath (Join-Path $modulesRoot 'playwright-mcp-snapshot.md') -PathType Leaf) 'Rule template missing in src\modules'
+    Write-Host '[PASS] Directory structure: src\modules separation'
+
     $extension = Join-Path $data 'extensions\ms-ceintl.vscode-language-pack-ja-1.0.0'
     [void][IO.Directory]::CreateDirectory((Join-Path $extension 'translations'))
     [IO.File]::WriteAllText((Join-Path $extension 'translations\main.i18n.json'), '{}')
@@ -53,7 +70,7 @@ try {
     function Invoke-RestMethod {
         return @{ assets = @(@{ name = 'MinGit-1.2.3-64-bit.zip'; digest = 'sha256:' + $script:fixtureHash; browser_download_url = 'https://fixture.invalid/git.zip' }) }
     }
-    . (Join-Path $sourceRoot 'Update-VSCodeOnline.ps1')
+    . (Join-Path $modulesRoot 'Update-VSCodeOnline.ps1')
     # Restore only the downloader mock after loading the real ZIP helper.
     function Save-UrlToFile($Url, $DestinationPath) {
         [void][IO.Directory]::CreateDirectory((Split-Path -LiteralPath $DestinationPath))
@@ -80,10 +97,51 @@ try {
     Assert $rejected 'Invalid Git hash was not rejected'
     Assert (-not (Test-Path -LiteralPath (Join-Path $data 'tools\git\cmd\git.exe'))) 'Invalid Git archive was installed'
     Write-Host '[PASS] Git: ZIP install, child-only PATH, offline reuse, SHA-256 rejection'
+
+    # 4. Verify portable isolation, global rules deployment, legacy cline migration, child env
+    $sandboxData = Join-Path $sandbox 'data'
+    $data = $sandboxData
+    $cline = Join-Path $data 'home\.cline'
+    $legacyDir = Join-Path $data 'cline\data\settings'
+    [void][IO.Directory]::CreateDirectory($legacyDir)
+    [IO.File]::WriteAllText((Join-Path $legacyDir 'legacy.json'), '{}')
+
+    [void][IO.Directory]::CreateDirectory((Join-Path $data 'tools\git\cmd'))
+    [void][IO.Directory]::CreateDirectory((Join-Path $data 'tools\git\usr\bin'))
+    [void][IO.Directory]::CreateDirectory((Join-Path $data 'tools\git\etc'))
+    [IO.File]::WriteAllText((Join-Path $data 'tools\git\cmd\git.exe'), 'fixture')
+    [IO.File]::WriteAllText((Join-Path $data 'tools\git\usr\bin\ssh.exe'), 'fixture')
+    [IO.File]::WriteAllText((Join-Path $data 'tools\git\etc\gitconfig'), "[include]`r`n`tpath = C:/Program Files/Git/etc/gitconfig`r`n")
+
+    Initialize-Portable
+
+    Assert (Test-Path -LiteralPath (Join-Path $cline 'data\settings\legacy.json') -PathType Leaf) 'Legacy cline data was not migrated'
+    $deployedRule = Join-Path $cline 'rules\playwright-mcp-snapshot.md'
+    Assert (Test-Path -LiteralPath $deployedRule -PathType Leaf) 'playwright-mcp-snapshot.md was not deployed to .cline\rules'
+    Assert ([IO.File]::ReadAllText($deployedRule, [Text.Encoding]::UTF8) -ceq [IO.File]::ReadAllText((Join-Path $modulesRoot 'playwright-mcp-snapshot.md'), [Text.Encoding]::UTF8)) 'Rule content mismatch'
+
+    $childInfo = New-Object Diagnostics.ProcessStartInfo
+    $childInfo.EnvironmentVariables['OneDrive'] = 'C:\HostOneDrive'
+    $origUserProfile = $env:USERPROFILE
+    Set-PortableChildEnvironment -Info $childInfo -IncludeGitPath
+
+    Assert ($childInfo.EnvironmentVariables['USERPROFILE'] -eq (Join-Path $data 'home')) 'Child USERPROFILE not isolated'
+    Assert ($childInfo.EnvironmentVariables['CLINE_DIR'] -eq $cline) 'Child CLINE_DIR does not match home\.cline'
+    Assert ($childInfo.EnvironmentVariables['GCM_CREDENTIAL_STORE'] -eq 'dpapi') 'GCM store not set to dpapi'
+    Assert (-not $childInfo.EnvironmentVariables.ContainsKey('OneDrive')) 'OneDrive variable was not stripped'
+    Assert ($childInfo.EnvironmentVariables['PATH'].StartsWith((Join-Path $data 'tools\git\cmd') + ';' + (Join-Path $data 'tools\bin') + ';')) 'Child PATH order incorrect'
+    Assert ($env:USERPROFILE -ceq $origUserProfile) 'Parent USERPROFILE was mutated'
+    Write-Host '[PASS] Modules layout, .cline\rules deployment, legacy migration, and full portable isolation'
 }
 finally {
     # The target is the unique sandbox created above, never an application folder.
-    if ($sandbox -and (Split-Path -Leaf $sandbox) -like 'portable-tests-*') {
+    if ($sandbox -and (Split-Path -Leaf $sandbox) -like 'portable-tests-*' -and (Test-Path -LiteralPath $sandbox)) {
         Remove-Item -LiteralPath $sandbox -Recurse -Force
+    }
+    if (-not $hadVSCode -and (Test-Path -LiteralPath $vscodeDir)) {
+        $remaining = @(Get-ChildItem -LiteralPath $vscodeDir -Recurse -File -Force -ErrorAction SilentlyContinue)
+        if ($remaining.Count -eq 0) {
+            Remove-Item -LiteralPath $vscodeDir -Recurse -Force
+        }
     }
 }

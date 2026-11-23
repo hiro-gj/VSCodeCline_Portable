@@ -26,8 +26,15 @@ function Set-PortableMcpSettings {
     Set-PortableProperty $server 'type' 'stdio'
     Set-PortableProperty $server 'command' $code
     Set-PortableProperty $server 'args' @((Join-Path $mcpRoot 'start-mcp.js'))
+    $paths = Get-PortableIsolationPaths
     if (-not $server.env) { $server | Add-Member -NotePropertyName env -NotePropertyValue ([pscustomobject]@{}) -Force }
     Set-PortableProperty $server.env 'ELECTRON_RUN_AS_NODE' '1'
+    Set-PortableProperty $server.env 'USERPROFILE'          $paths.Home
+    Set-PortableProperty $server.env 'HOME'                 $paths.Home
+    Set-PortableProperty $server.env 'APPDATA'              $paths.AppDataRoaming
+    Set-PortableProperty $server.env 'LOCALAPPDATA'         $paths.AppDataLocal
+    Set-PortableProperty $server.env 'TEMP'                 $paths.TmpDir
+    Set-PortableProperty $server.env 'TMP'                  $paths.TmpDir
     Set-PortableProperty $settings.mcpServers 'playwright' $server
     Write-PortableJson $settingsPath $settings
 }
@@ -39,13 +46,9 @@ function Invoke-PortableNode([string[]]$NodeArgs, [hashtable]$Environment = @{},
     $info.UseShellExecute = $false
     $info.RedirectStandardOutput = $CaptureOutput.IsPresent
     $info.Arguments = (@($NodeArgs | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' ')
-    foreach ($key in @($info.EnvironmentVariables.Keys)) {
-        if ($key -like 'VSCODE_*' -or $key -like 'CLINE_*') { $info.EnvironmentVariables.Remove($key) }
-    }
-    $info.EnvironmentVariables['ELECTRON_RUN_AS_NODE'] = '1'
-    $info.EnvironmentVariables['TEMP'] = Join-Path $data 'tmp'
-    $info.EnvironmentVariables['TMP'] = Join-Path $data 'tmp'
-    foreach ($key in $Environment.Keys) { $info.EnvironmentVariables[$key] = $Environment[$key] }
+    $nodeEnv = @{ ELECTRON_RUN_AS_NODE = '1' }
+    foreach ($key in $Environment.Keys) { $nodeEnv[$key] = $Environment[$key] }
+    Set-PortableChildEnvironment -Info $info -ExtraEnvironment $nodeEnv
     $process = [Diagnostics.Process]::Start($info)
     try {
         $output = if ($CaptureOutput) { $process.StandardOutput.ReadToEnd() }
@@ -87,8 +90,9 @@ function Install-PortableEnvironment {
     Write-PortableStage 5 'Playwright MCP を確認しています'
     $mcpRoot = Join-Path $cline 'mcp\playwright'
     [void][IO.Directory]::CreateDirectory($mcpRoot)
+    $mcpSourceDir = if ($modulesRoot) { $modulesRoot } else { Join-Path $sourceRoot 'modules' }
     foreach ($name in @('start-mcp.js', 'verify-mcp.js')) {
-        $content = [IO.File]::ReadAllText((Join-Path $sourceRoot $name), [Text.Encoding]::UTF8)
+        $content = [IO.File]::ReadAllText((Join-Path $mcpSourceDir $name), [Text.Encoding]::UTF8)
         $target = Join-Path $mcpRoot $name
         if (-not (Test-Path -LiteralPath $target) -or [IO.File]::ReadAllText($target) -cne $content) {
             [IO.File]::WriteAllText($target, $content, (New-Object Text.UTF8Encoding($false)))

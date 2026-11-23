@@ -52,36 +52,55 @@ Cline の保存先を適用するため、通常は `Code.exe` を直接実行�
 
 VSCode の配置先は、常に **`src` の隣にある `VSCode` フォルダ**です。
 ランチャーの場所を基準に決定するため、実行時のカレントフォルダや固定のドライブ文字には依存しません。
+また、作業ファイルや認証情報、一時ファイル等はホスト OS 側に書き出されず、すべて `VSCode\data` 配下に封じ込められます。
 
 ```text
 親フォルダ
 ├─ README.md
-├─ Start-VSCodeCline_Portable.cmd - 起動.lnk  管理メニュー用（自動生成）
-├─ src
-│  ├─ Start-VSCodeCline_Portable.cmd         ランチャー
-│  ├─ *.ps1                                起動・導入・更新処理
-│  ├─ start-mcp.js                          MCP 起動スクリプト
-│  └─ verify-mcp.js                         動作確認スクリプト
-└─ VSCode                                 Start-VSCodeCline_Portable.cmd の実行で自動生成
+├─ Start-VSCodeCline_Portable.cmd - 起動.lnk  管理メニュー用ショートカット（自動生成）
+├─ src/
+│  ├─ Start-VSCodeCline_Portable.cmd          ランチャー本体（src 直下はこの 1 ファイルのみ）
+│  └─ modules/                                モジュール・スクリプト・テンプレート格納先
+│     ├─ Common-Helpers.ps1 / 他 *.ps1        起動・導入・更新・単体テスト処理
+│     ├─ start-mcp.js / verify-mcp.js         MCP 起動・動作確認スクリプト
+│     └─ playwright-mcp-snapshot.md           Cline グローバルルール同梱テンプレート
+└─ VSCode/                                    Start-VSCodeCline_Portable.cmd の実行で自動生成
    ├─ Code.exe / その他の本体ファイル
-   └─ data
-      ├─ argv.json                         起動設定
-      ├─ user-data                         VSCode の設定・状態・ログ
-      ├─ extensions                        日本語パック・Cline 等の拡張機能
-      ├─ tmp                               導入・更新用の一時ファイルとキャッシュ
-      ├─ tools/git                         ポータブル Git（MinGit、実行ファイルは cmd/git.exe）
-      └─ cline                             Cline の設定・履歴等
-         ├─ data/settings/cline_mcp_settings.json
-         ├─ compatibility/backups          互換修正時のバックアップ（該当時のみ）
-         └─ mcp/playwright
-            ├─ start-mcp.js / verify-mcp.js
-            ├─ node_modules                Playwright MCP と依存パッケージ
-            ├─ browsers                    専用 Chromium
-            ├─ user-data                   MCP 用ブラウザープロファイル
-            └─ output                      MCP 出力
+   └─ data/                                   すべての作業ファイル・認証情報をこの配下に集約
+      ├─ argv.json                            起動設定
+      ├─ user-data/                           VSCode の設定・状態・ログ
+      ├─ extensions/                          日本語パック・Cline 等の拡張機能
+      ├─ tmp/                                 導入・更新用の一時ファイル、Add-Type 一時領域、npm キャッシュ
+      ├─ home/                                ポータブル仮想ホーム (USERPROFILE / HOME)
+      │  ├─ .cline/                           Cline の設定ルート (CLINE_DIR かつ ~/.cline / 旧 data\cline から自動移行)
+      │  │  ├─ rules/
+      │  │  │  └─ playwright-mcp-snapshot.md  自動配置される Playwright MCP スナップショット運用ルール
+      │  │  ├─ data/settings/                 Cline 設定 (cline_mcp_settings.json 等)
+      │  │  ├─ compatibility/backups/         互換修正時のバックアップ（該当時のみ）
+      │  │  └─ mcp/playwright/                MCP サーバー・Chromium・ブラウザープロファイル
+      │  ├─ .ssh/                             ポータブル SSH ルート (known_hosts, 鍵ファイル / NTFS ACL 保護)
+      │  ├─ .gitconfig                        ポータブル Git グローバル設定
+      │  ├─ .npmrc                            npm ユーザー設定
+      │  └─ .config/gh/                       GitHub CLI 設定
+      ├─ appdata/                             ポータブル AppData (Roaming / Local / LocalLow / PSReadLine 履歴等)
+      ├─ git/                                 ポータブル Git 管理領域
+      │  ├─ system.gitconfig                  ホスト Program Files への include を遮断した Git 設定
+      │  └─ gcm-dpapi/                        GCM DPAPI 暗号化クレデンシャル保存先 (NTFS ACL 保護)
+      └─ tools/
+         ├─ git/                              ポータブル Git (MinGit、実行ファイルは cmd/git.exe)
+         └─ bin/                              ポータブル SSH シム群 (ssh, ssh-keygen, scp 等)
 ```
 
 `VSCode` フォルダとその配下は、`Start-VSCodeCline_Portable.cmd` の導入処理や、起動後の VSCode / Cline / MCP の利用に応じて自動的に作成されます。事前に手動で作成する必要はありません。
+
+### 展開フォルダ外への作業ファイル流出防止（完全ポータブル分離）
+
+本ツールでは、ホスト PC への痕跡残留を防ぎ安全に利用できるよう、プロセスツリー単位で以下の分離を実施しています。
+
+- **Cline 設定・グローバルルール**: `CLINE_DIR` およびポータブルホームを `data\home\.cline` に統合。どの作業フォルダを開いても `rules\playwright-mcp-snapshot.md`（Playwright MCP スナップショット運用ルール）が自動適用されます。
+- **Git / GitHub 認証情報**: Git Credential Manager (GCM) は Windows 資格情報マネージャー（OS 側）を使わず、`data\git\gcm-dpapi` に Windows DPAPI で暗号化保存します（平文保存禁止）。また MinGit システム設定からホスト側 Git 設定の `[include]` を遮断します。
+- **SSH 鍵・known_hosts**: `data\tools\bin` のシムおよび `GIT_SSH` 経由で MinGit 同梱 OpenSSH を使用し、`data\home\.ssh` 配下に保存します。NTFS 環境では `.ssh` および `gcm-dpapi` のアクセス権を実行ユーザーのみに制限します。
+- **一時ファイル・コマンド履歴**: `TEMP` / `TMP` を `data\tmp` に固定し、PowerShell 履歴やキャッシュも `data\appdata` 内に限定します。
 
 ### 別の場所・PC への移動
 
@@ -89,6 +108,7 @@ VSCode と関連プロセスを終了してから、`src` と `VSCode` を同じ
 バックアップも両フォルダをまとめて取得してください。
 
 移動後の起動時に、ショートカットと管理対象 MCP の実行パスを更新します。
+旧バージョンで作成された `VSCode\data\cline` がある場合も、起動時に新パス `VSCode\data\home\.cline` へ自動移行されます。
 ユーザーが追加した設定内の絶対パスは自動変換しません。
 認証情報や履歴を含む可能性があるため、保存先の取り扱いに注意してください。
 

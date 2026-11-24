@@ -49,7 +49,7 @@ function Update-AllOnline {
         Write-Host "[完了] Cline バージョン: $afterVer" -ForegroundColor Green
     }
     if ($status.McpNeedsUpd -and $status.McpRelease) {
-        Write-Host 'Playwright MCP と専用 Chromium を最新バージョンへ更新しています...'
+        Write-Host 'Playwright MCP を最新バージョンへ更新しています...'
         [void](Install-PortablePlaywrightMcp -TargetVersion $status.McpRelease.Version -Force -VerifyAfterSwap)
         $afterMcp = Get-InstalledPlaywrightMcpVersion
         Write-Host "[完了] Playwright MCP バージョン: $afterMcp" -ForegroundColor Green

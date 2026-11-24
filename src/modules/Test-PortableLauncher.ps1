@@ -196,26 +196,39 @@ try {
     $mcpJson = [IO.File]::ReadAllText($mcpSettingsPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
     Assert ($mcpJson.mcpServers.playwright.command -eq $code) 'Set-PortableMcpSettings did not set command from empty file'
     Assert ($mcpJson.mcpServers.playwright.cwd -eq $mcpDir) 'Set-PortableMcpSettings did not set cwd'
-    Assert ($mcpJson.mcpServers.playwright.env.PLAYWRIGHT_BROWSERS_PATH -eq (Join-Path $mcpDir 'browsers')) 'PLAYWRIGHT_BROWSERS_PATH missing'
+    Assert (-not $mcpJson.mcpServers.playwright.env.PSObject.Properties['PLAYWRIGHT_BROWSERS_PATH']) 'PLAYWRIGHT_BROWSERS_PATH should not be set'
+    Assert ($mcpJson.mcpServers.playwright.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD -eq '1') 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD missing'
 
     Set-PortableProperty $mcpJson.mcpServers 'otherServer' ([pscustomobject]@{ type = 'stdio'; command = 'node' })
     Set-PortableProperty $mcpJson.mcpServers.playwright 'command' 'Z:\old\Code.exe'
+    Set-PortableProperty $mcpJson.mcpServers.playwright.env 'PLAYWRIGHT_BROWSERS_PATH' 'Z:\legacy\browsers'
     Set-PortableProperty $mcpJson.mcpServers.playwright 'autoApprove' @('browser_navigate')
     Write-PortableJson $mcpSettingsPath $mcpJson
     Set-PortableMcpSettings
     $mcpJson2 = [IO.File]::ReadAllText($mcpSettingsPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
     Assert ($mcpJson2.mcpServers.playwright.command -eq $code) 'Relocated command was not repaired'
+    Assert (-not $mcpJson2.mcpServers.playwright.env.PSObject.Properties['PLAYWRIGHT_BROWSERS_PATH']) 'Legacy PLAYWRIGHT_BROWSERS_PATH was not removed'
+    Assert ($mcpJson2.mcpServers.playwright.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD -eq '1') 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD missing after repair'
     Assert ($mcpJson2.mcpServers.playwright.autoApprove[0] -eq 'browser_navigate') 'autoApprove was lost'
     Assert ($mcpJson2.mcpServers.otherServer.command -eq 'node') 'Custom MCP server was lost'
     Write-Host '[PASS] Multi-version Cline MCP exFAT fix (4.1.26/4.1.27/future/upstream) and MCP settings resilience'
 
-    # 6. Verify unpinned MCP policy and 4-component metadata / Git force-update / ZIP detection
+    # 6. Verify unpinned MCP policy, local Edge resolver, and 4-component metadata
     . (Join-Path $modulesRoot 'Get-PortableMetadata.ps1')
     . (Join-Path $modulesRoot 'Install-FromLocalPackage.ps1')
     $installEnvSource = [IO.File]::ReadAllText((Join-Path $modulesRoot 'Install-PortableEnvironment.ps1'), [Text.Encoding]::UTF8)
     $readmeSource = [IO.File]::ReadAllText((Join-Path $repoParent 'README.md'), [Text.Encoding]::UTF8)
+    $startMcpSource = [IO.File]::ReadAllText((Join-Path $modulesRoot 'start-mcp.js'), [Text.Encoding]::UTF8)
+    $verifyMcpSource = [IO.File]::ReadAllText((Join-Path $modulesRoot 'verify-mcp.js'), [Text.Encoding]::UTF8)
     Assert (-not $installEnvSource.Contains('0.0.85')) 'Hardcoded 0.0.85 pin still present in Install-PortableEnvironment.ps1'
     Assert (-not $readmeSource.Contains('0.0.85')) 'Hardcoded 0.0.85 pin restriction still present in README.md'
+    Assert (-not $installEnvSource.Contains('Install-PortableChromium')) 'Install-PortableChromium still present'
+    Assert (-not $startMcpSource.Contains('chromium.executablePath')) 'start-mcp.js still uses chromium.executablePath()'
+    Assert ($startMcpSource.Contains("'--browser', 'msedge'")) 'start-mcp.js must default to --browser msedge'
+    Assert ($verifyMcpSource.Contains("channel: 'msedge'")) 'verify-mcp.js must launch msedge channel'
+
+    $resolvedEdge = Get-LocalEdgeExecutablePath
+    Assert ($resolvedEdge -and (Test-Path -LiteralPath $resolvedEdge -PathType Leaf)) 'Get-LocalEdgeExecutablePath failed to find local Edge'
 
     Assert ((ConvertTo-ComparableGitVersion 'git version 2.56.1.windows.1') -eq '2.56.1.1') 'Comparable Git version (windows.1) mismatch'
     Assert ((ConvertTo-ComparableGitVersion 'v2.56.1.windows.2') -eq '2.56.1.2') 'Comparable Git version (windows.2) mismatch'
@@ -232,7 +245,7 @@ try {
     Assert ($gitInstalled.Version -eq '2.56.1.windows.1') 'Get-InstalledPortableGitInfo display version mismatch'
     Assert ($gitInstalled.ComparableVersion -eq '2.56.1.1') 'Get-InstalledPortableGitInfo comparable version mismatch'
     Assert (Test-ZipContainsMinGit $zip) 'Test-ZipContainsMinGit did not detect MinGit fixture archive'
-    Write-Host '[PASS] Unpinned MCP policy and 4-component update metadata (VSCode / Cline / MCP / Git)'
+    Write-Host '[PASS] Unpinned MCP policy, local Edge resolver, and 4-component update metadata'
 }
 finally {
     # The target is the unique sandbox created above, never an application folder.

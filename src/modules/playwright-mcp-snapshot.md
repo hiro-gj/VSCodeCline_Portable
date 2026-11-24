@@ -1,4 +1,5 @@
 # Rules for Using Playwright MCP `browser_snapshot`
+<!-- https://github.com/cline/cline/issues/15470 -->
 
 Calling `browser_snapshot` directly on pages with a large number of elements (such as full account lists or unfiltered search results) returns multi-MB snapshots into the conversation history (`tool_result`), causing VSCode to freeze and crash. You MUST strictly follow these operational rules:
 

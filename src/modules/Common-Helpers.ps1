@@ -31,6 +31,37 @@ function ConvertTo-NativeArgument([string]$Value) {
     return '"' + ([regex]::Replace(([regex]::Replace($Value, '(\\*)"', '$1$1\"')), '(\\+)$', '$1$1')) + '"'
 }
 
+function Test-PortableHardLinkSupport([string]$DirectoryPath) {
+    [void][IO.Directory]::CreateDirectory($DirectoryPath)
+    $fullDir  = [IO.Path]::GetFullPath($DirectoryPath)
+    $rootPath = [IO.Path]::GetPathRoot($fullDir)
+    if ($rootPath -and $rootPath -match '^[A-Za-z]:\\$') {
+        try {
+            $volume = New-Object IO.DriveInfo ($rootPath)
+            if ($volume.DriveFormat -in @('exFAT', 'FAT32', 'FAT')) {
+                return $false
+            }
+        }
+        catch {}
+    }
+
+    $probeBase = Join-Path $fullDir ('.hl-probe-' + $PID + '-' + [guid]::NewGuid().ToString('N'))
+    $probeSrc  = $probeBase + '.src'
+    $probeLink = $probeBase + '.lnk'
+    try {
+        [IO.File]::WriteAllText($probeSrc, '', (New-Object Text.UTF8Encoding($false)))
+        $null = New-Item -ItemType HardLink -Path $probeLink -Value $probeSrc -ErrorAction Stop
+        return $true
+    }
+    catch {
+        return $false
+    }
+    finally {
+        if (Test-Path -LiteralPath $probeLink) { Remove-Item -LiteralPath $probeLink -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $probeSrc)  { Remove-Item -LiteralPath $probeSrc  -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 function Get-PortableIsolationPaths {
     $portableHome = Join-Path $data 'home'
     $clineRoot    = if ($cline) { $cline } else { Join-Path $portableHome '.cline' }

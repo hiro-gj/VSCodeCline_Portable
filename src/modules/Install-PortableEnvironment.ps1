@@ -15,26 +15,68 @@ function Set-PortableMcpSettings {
     $mcpRoot = Join-Path $cline 'mcp\playwright'
     if (-not (Test-Path -LiteralPath (Join-Path $mcpRoot 'start-mcp.js'))) { return }
     $settingsPath = Join-Path $cline 'data\settings\cline_mcp_settings.json'
-    $settings = if (Test-Path -LiteralPath $settingsPath) {
-        [IO.File]::ReadAllText($settingsPath) | ConvertFrom-Json
-    } else { [pscustomobject]@{} }
-    if (-not $settings.mcpServers) {
-        $settings | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{}) -Force
+    $settings = $null
+    if (Test-Path -LiteralPath $settingsPath -PathType Leaf) {
+        $raw = [IO.File]::ReadAllText($settingsPath, [Text.Encoding]::UTF8)
+        if (-not [string]::IsNullOrWhiteSpace($raw)) {
+            try {
+                $settings = $raw | ConvertFrom-Json
+            }
+            catch {
+                $corruptBackup = $settingsPath + '.corrupt.' + (Get-Date -Format 'yyyyMMddHHmmss') + '.bak'
+                [IO.File]::Copy($settingsPath, $corruptBackup, $true)
+                Write-Warning "破損した cline_mcp_settings.json を退避し再生成します: $corruptBackup"
+                $settings = $null
+            }
+        }
     }
-    $server = $settings.mcpServers.playwright
-    if (-not $server) { $server = [pscustomobject]@{ disabled = $false; timeout = 60 } }
+    if ($null -eq $settings -or $settings -isnot [psobject]) {
+        $settings = [pscustomobject]@{}
+    }
+    if (-not $settings.PSObject.Properties['mcpServers'] -or $null -eq $settings.mcpServers) {
+        Set-PortableProperty $settings 'mcpServers' ([pscustomobject]@{})
+    }
+    $server = if ($settings.mcpServers.PSObject.Properties['playwright']) { $settings.mcpServers.playwright } else { $null }
+    if ($null -eq $server) {
+        $server = [pscustomobject]@{ disabled = $false; timeout = 60 }
+    }
     Set-PortableProperty $server 'type' 'stdio'
-    Set-PortableProperty $server 'command' $code
-    Set-PortableProperty $server 'args' @((Join-Path $mcpRoot 'start-mcp.js'))
+    Set-PortableProperty $server 'command' ([string]$code)
+    Set-PortableProperty $server 'args' @([string](Join-Path $mcpRoot 'start-mcp.js'))
+    Set-PortableProperty $server 'cwd' ([string]$mcpRoot)
     $paths = Get-PortableIsolationPaths
-    if (-not $server.env) { $server | Add-Member -NotePropertyName env -NotePropertyValue ([pscustomobject]@{}) -Force }
-    Set-PortableProperty $server.env 'ELECTRON_RUN_AS_NODE' '1'
-    Set-PortableProperty $server.env 'USERPROFILE'          $paths.Home
-    Set-PortableProperty $server.env 'HOME'                 $paths.Home
-    Set-PortableProperty $server.env 'APPDATA'              $paths.AppDataRoaming
-    Set-PortableProperty $server.env 'LOCALAPPDATA'         $paths.AppDataLocal
-    Set-PortableProperty $server.env 'TEMP'                 $paths.TmpDir
-    Set-PortableProperty $server.env 'TMP'                  $paths.TmpDir
+    if (-not $server.PSObject.Properties['env'] -or $null -eq $server.env) {
+        Set-PortableProperty $server 'env' ([pscustomobject]@{})
+    }
+    Set-PortableProperty $server.env 'ELECTRON_RUN_AS_NODE'     '1'
+    Set-PortableProperty $server.env 'PLAYWRIGHT_BROWSERS_PATH' ([string](Join-Path $mcpRoot 'browsers'))
+    Set-PortableProperty $server.env 'USERPROFILE'              ([string]$paths.Home)
+    Set-PortableProperty $server.env 'HOME'                     ([string]$paths.Home)
+    if ($paths.Home -match '^([A-Za-z]:)(\\.*)$') {
+        Set-PortableProperty $server.env 'HOMEDRIVE' $Matches[1]
+        Set-PortableProperty $server.env 'HOMEPATH'  $Matches[2]
+    }
+    else {
+        if ($server.env.PSObject.Properties['HOMEDRIVE']) { $server.env.PSObject.Properties.Remove('HOMEDRIVE') }
+        if ($server.env.PSObject.Properties['HOMEPATH'])  { $server.env.PSObject.Properties.Remove('HOMEPATH') }
+    }
+    Set-PortableProperty $server.env 'APPDATA'         ([string]$paths.AppDataRoaming)
+    Set-PortableProperty $server.env 'LOCALAPPDATA'    ([string]$paths.AppDataLocal)
+    Set-PortableProperty $server.env 'XDG_CONFIG_HOME' ([string]$paths.XdgConfigHome)
+    Set-PortableProperty $server.env 'XDG_DATA_HOME'   ([string]$paths.XdgDataHome)
+    Set-PortableProperty $server.env 'XDG_STATE_HOME'  ([string]$paths.XdgStateHome)
+    Set-PortableProperty $server.env 'XDG_CACHE_HOME'  ([string]$paths.XdgCacheHome)
+    Set-PortableProperty $server.env 'TEMP'            ([string]$paths.TmpDir)
+    Set-PortableProperty $server.env 'TMP'             ([string]$paths.TmpDir)
+    Set-PortableProperty $server.env 'TMPDIR'          ([string]$paths.TmpDir)
+    foreach ($prop in @($server.env.PSObject.Properties)) {
+        if ($null -eq $prop.Value) {
+            $server.env.PSObject.Properties.Remove($prop.Name)
+        }
+        elseif ($prop.Value -isnot [string]) {
+            $prop.Value = [string]$prop.Value
+        }
+    }
     Set-PortableProperty $settings.mcpServers 'playwright' $server
     Write-PortableJson $settingsPath $settings
 }
@@ -57,6 +99,214 @@ function Invoke-PortableNode([string[]]$NodeArgs, [hashtable]$Environment = @{},
         if ($CaptureOutput) { return $output }
     }
     finally { $process.Dispose() }
+}
+
+function Ensure-PortableBootstrapNpm {
+    $npmRoot = Join-Path $data 'tmp\portable-npm'
+    $npmCli = Join-Path $npmRoot 'package\bin\npm-cli.js'
+    if (-not (Test-Path -LiteralPath $npmCli -PathType Leaf)) {
+        Initialize-NetworkConfig
+        $npm = Invoke-RestMethod -Uri 'https://registry.npmjs.org/npm/10.9.2' -Headers @{ 'User-Agent' = 'VSCode-Portable-Launcher/1.0' } -TimeoutSec 30
+        $archive = Join-Path $data 'tmp\npm-10.9.2.tgz'
+        Save-UrlToFile $npm.dist.tarball $archive 'Downloading bootstrap npm'
+        $hash = [Security.Cryptography.SHA512]::Create()
+        $stream = [IO.File]::OpenRead($archive)
+        try { $integrity = 'sha512-' + [Convert]::ToBase64String($hash.ComputeHash($stream)) }
+        finally { $stream.Dispose(); $hash.Dispose() }
+        if ($integrity -cne $npm.dist.integrity) { throw 'npm package integrity check failed.' }
+        [void][IO.Directory]::CreateDirectory($npmRoot)
+        & tar.exe -xzf $archive -C $npmRoot
+        if ($LASTEXITCODE -ne 0) { throw 'npm package extraction failed.' }
+    }
+    return $npmCli
+}
+
+function Sync-PortableMcpScripts([string]$McpRoot) {
+    [void][IO.Directory]::CreateDirectory($McpRoot)
+    $mcpSourceDir = if ($modulesRoot) { $modulesRoot } else { Join-Path $sourceRoot 'modules' }
+    foreach ($name in @('start-mcp.js', 'verify-mcp.js')) {
+        $content = [IO.File]::ReadAllText((Join-Path $mcpSourceDir $name), [Text.Encoding]::UTF8)
+        $target = Join-Path $McpRoot $name
+        if (-not (Test-Path -LiteralPath $target) -or [IO.File]::ReadAllText($target, [Text.Encoding]::UTF8) -cne $content) {
+            [IO.File]::WriteAllText($target, $content, (New-Object Text.UTF8Encoding($false)))
+        }
+    }
+}
+
+function Install-PortableChromium([string]$PlaywrightCliRoot, [string]$BrowserPath, [switch]$ForcePlan, [switch]$CleanUnused) {
+    $browserMarker = Join-Path $BrowserPath 'portable-install.json'
+    $playwrightPackage = [IO.File]::ReadAllText((Join-Path $PlaywrightCliRoot 'node_modules\playwright\package.json'), [Text.Encoding]::UTF8) | ConvertFrom-Json
+    $installedBrowser = if (Test-Path -LiteralPath $browserMarker -PathType Leaf) { [IO.File]::ReadAllText($browserMarker, [Text.Encoding]::UTF8) | ConvertFrom-Json } else { $null }
+    if (-not $ForcePlan -and $installedBrowser -and $installedBrowser.version -eq $playwrightPackage.version) {
+        return @()
+    }
+    Write-Host "[Setup] Installing portable Chromium (Playwright $($playwrightPackage.version))..."
+    # Playwright's directory-lock heartbeat is unreliable on exFAT. Ask its
+    # CLI for the official platform-specific downloads, then extract them
+    # without that lock. The final smoke test checks the actual executables.
+    $plan = Invoke-PortableNode -NodeArgs @((Join-Path $PlaywrightCliRoot 'node_modules\playwright\cli.js'), 'install', '--dry-run', '--no-shell', 'chromium') -Environment @{ PLAYWRIGHT_BROWSERS_PATH = $BrowserPath } -CaptureOutput
+    $downloads = [regex]::Matches($plan, '(?m)^  Install location:\s+([^\r\n]+)\r?\n  Download url:\s+(https://[^\r\n]+)')
+    if ($downloads.Count -lt 1) { throw "Cannot parse Playwright browser download plan: $plan" }
+    $activeLeafNames = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($download in $downloads) {
+        $destination = $download.Groups[1].Value.Trim()
+        $prefix = [IO.Path]::GetFullPath($BrowserPath).TrimEnd('\') + '\'
+        if (-not [IO.Path]::GetFullPath($destination).StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid browser destination.' }
+        [void]$activeLeafNames.Add((Split-Path -Leaf $destination))
+        $complete = Join-Path $destination 'INSTALLATION_COMPLETE'
+        if (Test-Path -LiteralPath $complete) { continue }
+        $zip = Join-Path $data ('tmp\' + (Split-Path -Leaf $destination) + '.zip')
+        Save-UrlToFile $download.Groups[2].Value.Trim() $zip 'Downloading portable browser component'
+        Expand-ZipArchiveFast $zip $destination
+        [IO.File]::WriteAllText($complete, '')
+    }
+    Write-PortableJson $browserMarker @{ version = [string]$playwrightPackage.version }
+    return @($activeLeafNames)
+}
+
+function Remove-UnusedPortableChromium([string]$PlaywrightCliRoot, [string]$BrowserPath) {
+    if (-not (Test-Path -LiteralPath $BrowserPath -PathType Container)) { return }
+    $plan = Invoke-PortableNode -NodeArgs @((Join-Path $PlaywrightCliRoot 'node_modules\playwright\cli.js'), 'install', '--dry-run', '--no-shell', 'chromium') -Environment @{ PLAYWRIGHT_BROWSERS_PATH = $BrowserPath } -CaptureOutput
+    $downloads = [regex]::Matches($plan, '(?m)^  Install location:\s+([^\r\n]+)\r?\n  Download url:\s+(https://[^\r\n]+)')
+    if ($downloads.Count -lt 1) { return }
+    $activeLeafNames = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($download in $downloads) {
+        [void]$activeLeafNames.Add((Split-Path -Leaf $download.Groups[1].Value.Trim()))
+    }
+    foreach ($sub in (Get-ChildItem -LiteralPath $BrowserPath -Directory -ErrorAction SilentlyContinue)) {
+        if (-not $activeLeafNames.Contains($sub.Name)) {
+            try { Remove-Item -LiteralPath $sub.FullName -Recurse -Force -ErrorAction Stop } catch {}
+        }
+    }
+}
+
+function Install-PortablePlaywrightMcp([string]$TargetVersion = '', [string]$LocalTarball = '', [switch]$Force, [switch]$VerifyAfterSwap) {
+    $mcpRoot = Join-Path $cline 'mcp\playwright'
+    Sync-PortableMcpScripts $mcpRoot
+    $mcpCli = Join-Path $mcpRoot 'node_modules\@playwright\mcp\cli.js'
+    $mcpMarker = Join-Path $mcpRoot 'portable-package.json'
+    if (-not $Force -and [string]::IsNullOrWhiteSpace($LocalTarball) -and (Test-Path -LiteralPath $mcpCli -PathType Leaf) -and (Test-Path -LiteralPath $mcpMarker -PathType Leaf)) {
+        return $false
+    }
+
+    $installSpec = ''
+    $depSpec = ''
+    if (-not [string]::IsNullOrWhiteSpace($LocalTarball)) {
+        if (-not (Test-Path -LiteralPath $LocalTarball -PathType Leaf)) {
+            throw "指定された MCP パッケージ (.tgz) が見つかりません: $LocalTarball"
+        }
+        $installSpec = [IO.Path]::GetFullPath($LocalTarball)
+        $depSpec = '*'
+        Write-Host "[Setup] ローカルパッケージから Playwright MCP を導入／更新しています: $(Split-Path -Leaf $installSpec)"
+    }
+    else {
+        if ([string]::IsNullOrWhiteSpace($TargetVersion)) {
+            $latestRel = Get-LatestPlaywrightMcpRelease
+            $TargetVersion = $latestRel.Version
+        }
+        if ($TargetVersion -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+            throw "Playwright MCP バージョン形式が不正です: $TargetVersion"
+        }
+        $installSpec = "@playwright/mcp@$TargetVersion"
+        $depSpec = $TargetVersion
+        Write-Host "[Setup] Installing Playwright MCP ($TargetVersion) with the VS Code Node runtime..."
+    }
+
+    $npmCli = Ensure-PortableBootstrapNpm
+    $stageDir = Join-Path $data ('tmp\mcp-stage-' + [guid]::NewGuid().ToString('N'))
+    $backupDir = Join-Path $data ('tmp\mcp-backup-' + [guid]::NewGuid().ToString('N'))
+    $browserPath = Join-Path $mcpRoot 'browsers'
+    $swapNames = @('node_modules', 'package.json', 'package-lock.json', 'portable-package.json')
+    try {
+        [void][IO.Directory]::CreateDirectory($stageDir)
+        Write-PortableJson (Join-Path $stageDir 'package.json') @{
+            name = 'portable-playwright-mcp'; private = $true; dependencies = @{ '@playwright/mcp' = $depSpec }
+        }
+        Invoke-PortableNode -NodeArgs @($npmCli, 'install', $installSpec, '--prefix', $stageDir, '--cache', (Join-Path $data 'tmp\npm-cache'), '--no-audit', '--no-fund', '--ignore-scripts', '--bin-links=false') -WorkingDirectory $stageDir
+        $stagedCli = Join-Path $stageDir 'node_modules\@playwright\mcp\cli.js'
+        if (-not (Test-Path -LiteralPath $stagedCli -PathType Leaf)) {
+            throw 'Playwright MCP の展開検証に失敗しました (cli.js が見つかりません)。'
+        }
+        $stagedPkg = [IO.File]::ReadAllText((Join-Path $stageDir 'node_modules\@playwright\mcp\package.json'), [Text.Encoding]::UTF8) | ConvertFrom-Json
+        $installedVer = [string]$stagedPkg.version
+
+        [void](Install-PortableChromium -PlaywrightCliRoot $stageDir -BrowserPath $browserPath -ForcePlan:$Force.IsPresent)
+
+        [void][IO.Directory]::CreateDirectory($backupDir)
+        $movedBackups = New-Object 'Collections.Generic.List[string]'
+        $placedItems = New-Object 'Collections.Generic.List[string]'
+        try {
+            foreach ($itemName in $swapNames) {
+                $livePath = Join-Path $mcpRoot $itemName
+                if (Test-Path -LiteralPath $livePath) {
+                    Move-UpdateItem -Source $livePath -Destination (Join-Path $backupDir $itemName)
+                    $movedBackups.Add($itemName)
+                }
+            }
+            foreach ($itemName in @('node_modules', 'package.json', 'package-lock.json')) {
+                $stgPath = Join-Path $stageDir $itemName
+                if (Test-Path -LiteralPath $stgPath) {
+                    $placedItems.Add($itemName)
+                    Move-UpdateItem -Source $stgPath -Destination (Join-Path $mcpRoot $itemName)
+                }
+            }
+            $placedItems.Add('portable-package.json')
+            Write-PortableJson $mcpMarker @{ version = $installedVer }
+            Initialize-Portable
+            if ($VerifyAfterSwap) {
+                Invoke-PortableNode @((Join-Path $mcpRoot 'verify-mcp.js'))
+            }
+        }
+        catch {
+            foreach ($itemName in $placedItems) {
+                $livePath = Join-Path $mcpRoot $itemName
+                if (Test-Path -LiteralPath $livePath) {
+                    Remove-Item -LiteralPath $livePath -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+            foreach ($itemName in $movedBackups) {
+                $bakPath = Join-Path $backupDir $itemName
+                if (Test-Path -LiteralPath $bakPath) {
+                    try { Move-UpdateItem -Source $bakPath -Destination (Join-Path $mcpRoot $itemName) } catch {}
+                }
+            }
+            throw
+        }
+        Remove-UnusedPortableChromium -PlaywrightCliRoot $mcpRoot -BrowserPath $browserPath
+        return $true
+    }
+    finally {
+        if (Test-Path -LiteralPath $stageDir)  { Remove-Item -LiteralPath $stageDir  -Recurse -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $backupDir) { Remove-Item -LiteralPath $backupDir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+function Update-McpOnline([object]$PrefetchedRelease) {
+    $curVer = Get-InstalledPlaywrightMcpVersion
+    $rel = if ($PrefetchedRelease) { $PrefetchedRelease } else {
+        Write-Host 'npm レジストリへ Playwright MCP の最新バージョンを確認しています...'
+        Get-LatestPlaywrightMcpRelease
+    }
+    $curLabel = if ($curVer) { $curVer } else { '未インストール' }
+    Write-Host "  Playwright MCP : 現在 $curLabel -> 最新 $($rel.Version)"
+    if (-not $curVer) {
+        if (-not (Confirm-Action "Playwright MCP ($($rel.Version)) をインストールしますか？")) { return $false }
+    }
+    elseif ((Compare-VersionString $curVer $rel.Version) -ge 0) {
+        Write-Host '  -> Playwright MCP は既に最新バージョンです。' -ForegroundColor Green
+        if (-not (Confirm-Action 'Playwright MCP と専用 Chromium を強制再インストール／再検証しますか？')) { return $false }
+    }
+    else {
+        if (-not (Confirm-Action "Playwright MCP を $curVer から $($rel.Version) へアップデートしますか？")) { return $false }
+    }
+    if (-not (Wait-PortableCodeClosed -Required $false)) {
+        Write-Host '[中止] Playwright MCP の更新をキャンセルしました。'
+        return $false
+    }
+    [void](Install-PortablePlaywrightMcp -TargetVersion $rel.Version -Force -VerifyAfterSwap)
+    $afterVer = Get-InstalledPlaywrightMcpVersion
+    Write-Host "[完了] Playwright MCP バージョン: $afterVer （専用 Chromium 同期・動作確認済み）" -ForegroundColor Green
+    return $true
 }
 
 function Install-PortableEnvironment {
@@ -89,69 +339,9 @@ function Install-PortableEnvironment {
     Install-PortableGit
     Write-PortableStage 5 'Playwright MCP を確認しています'
     $mcpRoot = Join-Path $cline 'mcp\playwright'
-    [void][IO.Directory]::CreateDirectory($mcpRoot)
-    $mcpSourceDir = if ($modulesRoot) { $modulesRoot } else { Join-Path $sourceRoot 'modules' }
-    foreach ($name in @('start-mcp.js', 'verify-mcp.js')) {
-        $content = [IO.File]::ReadAllText((Join-Path $mcpSourceDir $name), [Text.Encoding]::UTF8)
-        $target = Join-Path $mcpRoot $name
-        if (-not (Test-Path -LiteralPath $target) -or [IO.File]::ReadAllText($target) -cne $content) {
-            [IO.File]::WriteAllText($target, $content, (New-Object Text.UTF8Encoding($false)))
-        }
-    }
-    $mcpCli = Join-Path $mcpRoot 'node_modules\@playwright\mcp\cli.js'
-    $mcpMarker = Join-Path $mcpRoot 'portable-package.json'
-    if (-not (Test-Path -LiteralPath $mcpCli) -or -not (Test-Path -LiteralPath $mcpMarker)) {
-        Write-Host '[Setup] Installing Playwright MCP with the VS Code Node runtime...'
-        $npmRoot = Join-Path $data 'tmp\portable-npm'
-        $npmCli = Join-Path $npmRoot 'package\bin\npm-cli.js'
-        if (-not (Test-Path -LiteralPath $npmCli)) {
-            Initialize-NetworkConfig
-            $npm = Invoke-RestMethod -Uri 'https://registry.npmjs.org/npm/10.9.2' -TimeoutSec 30
-            $archive = Join-Path $data 'tmp\npm-10.9.2.tgz'
-            Save-UrlToFile $npm.dist.tarball $archive 'Downloading bootstrap npm'
-            $hash = [Security.Cryptography.SHA512]::Create()
-            $stream = [IO.File]::OpenRead($archive)
-            try { $integrity = 'sha512-' + [Convert]::ToBase64String($hash.ComputeHash($stream)) }
-            finally { $stream.Dispose(); $hash.Dispose() }
-            if ($integrity -cne $npm.dist.integrity) { throw 'npm package integrity check failed.' }
-            [void][IO.Directory]::CreateDirectory($npmRoot)
-            & tar.exe -xzf $archive -C $npmRoot
-            if ($LASTEXITCODE -ne 0) { throw 'npm package extraction failed.' }
-        }
-        Write-PortableJson (Join-Path $mcpRoot 'package.json') @{
-            name = 'portable-playwright-mcp'; private = $true; dependencies = @{ '@playwright/mcp' = '0.0.85' }
-        }
-        # An explicit package avoids npm treating Electron's prefix as a global
-        # install of '.' (which would require unsupported exFAT symlinks).
-        Invoke-PortableNode -NodeArgs @($npmCli, 'install', '@playwright/mcp@0.0.85', '--prefix', $mcpRoot, '--cache', (Join-Path $data 'tmp\npm-cache'), '--no-audit', '--no-fund', '--ignore-scripts', '--bin-links=false') -WorkingDirectory $mcpRoot
-        Write-PortableJson $mcpMarker @{ version = '0.0.85' }
-    }
+    [void](Install-PortablePlaywrightMcp)
     Write-PortableStage 6 'ポータブル Chromium を確認しています'
-    $browserPath = Join-Path $mcpRoot 'browsers'
-    $browserMarker = Join-Path $browserPath 'portable-install.json'
-    $playwrightPackage = [IO.File]::ReadAllText((Join-Path $mcpRoot 'node_modules\playwright\package.json')) | ConvertFrom-Json
-    $installedBrowser = if (Test-Path -LiteralPath $browserMarker) { [IO.File]::ReadAllText($browserMarker) | ConvertFrom-Json } else { $null }
-    if (-not $installedBrowser -or $installedBrowser.version -ne $playwrightPackage.version) {
-        Write-Host '[Setup] Installing portable Chromium...'
-        # Playwright's directory-lock heartbeat is unreliable on exFAT. Ask its
-        # CLI for the official platform-specific downloads, then extract them
-        # without that lock. The final smoke test checks the actual executables.
-        $plan = Invoke-PortableNode -NodeArgs @((Join-Path $mcpRoot 'node_modules\playwright\cli.js'), 'install', '--dry-run', '--no-shell', 'chromium') -Environment @{ PLAYWRIGHT_BROWSERS_PATH = $browserPath } -CaptureOutput
-        $downloads = [regex]::Matches($plan, '(?m)^  Install location:\s+([^\r\n]+)\r?\n  Download url:\s+(https://[^\r\n]+)')
-        if ($downloads.Count -lt 1) { throw "Cannot parse Playwright browser download plan: $plan" }
-        foreach ($download in $downloads) {
-            $destination = $download.Groups[1].Value.Trim()
-            $prefix = [IO.Path]::GetFullPath($browserPath).TrimEnd('\') + '\'
-            if (-not [IO.Path]::GetFullPath($destination).StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid browser destination.' }
-            $complete = Join-Path $destination 'INSTALLATION_COMPLETE'
-            if (Test-Path -LiteralPath $complete) { continue }
-            $zip = Join-Path $data ('tmp\' + (Split-Path -Leaf $destination) + '.zip')
-            Save-UrlToFile $download.Groups[2].Value.Trim() $zip 'Downloading portable browser component'
-            Expand-ZipArchiveFast $zip $destination
-            [IO.File]::WriteAllText($complete, '')
-        }
-        Write-PortableJson $browserMarker @{ version = $playwrightPackage.version }
-    }
+    [void](Install-PortableChromium -PlaywrightCliRoot $mcpRoot -BrowserPath (Join-Path $mcpRoot 'browsers'))
     Initialize-Portable
     Write-PortableStage 7 'ブラウザーと MCP の動作を確認しています'
     try { Invoke-PortableNode @((Join-Path $mcpRoot 'verify-mcp.js')) }

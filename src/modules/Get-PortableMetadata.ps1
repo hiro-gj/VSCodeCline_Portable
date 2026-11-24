@@ -142,6 +142,75 @@ function Get-InstalledExtensionVersion([string]$ExtensionId) {
     return $best
 }
 
+function ConvertTo-ComparableGitVersion([string]$RawVersion) {
+    if ([string]::IsNullOrWhiteSpace($RawVersion)) { return $null }
+    $v = $RawVersion.Trim()
+    $v = $v -replace '^(?i)git\s+version\s+', ''
+    $v = $v -replace '^(?i)MinGit-', ''
+    $v = $v -replace '-(?:64-bit|32-bit|arm64)(?:\.zip)?$', ''
+    $v = $v -replace '^[vV]', ''
+    if ($v -match '^(\d+\.\d+\.\d+)\.windows\.(\d+)') {
+        return ($Matches[1] + '.' + $Matches[2])
+    }
+    if ($v -match '^(\d+\.\d+\.\d+\.\d+)') {
+        return $Matches[1]
+    }
+    if ($v -match '^(\d+\.\d+\.\d+)') {
+        return ($Matches[1] + '.1')
+    }
+    return $v
+}
+
+function Get-InstalledPlaywrightMcpVersion {
+    $mcpRoot = Join-Path $cline 'mcp\playwright'
+    $cliPath = Join-Path $mcpRoot 'node_modules\@playwright\mcp\cli.js'
+    $pkgPath = Join-Path $mcpRoot 'node_modules\@playwright\mcp\package.json'
+    if (-not (Test-Path -LiteralPath $cliPath -PathType Leaf) -or -not (Test-Path -LiteralPath $pkgPath -PathType Leaf)) {
+        return $null
+    }
+    try {
+        $pkg = [IO.File]::ReadAllText($pkgPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+        if ($pkg -and $pkg.version) { return [string]$pkg.version }
+    }
+    catch {}
+    return $null
+}
+
+function Get-InstalledPortableGitInfo {
+    $gitRoot = Join-Path $data 'tools\git'
+    $gitExe  = Join-Path $gitRoot 'cmd\git.exe'
+    if (-not (Test-Path -LiteralPath $gitExe -PathType Leaf)) { return $null }
+    $markerPath = Join-Path $gitRoot 'portable-install.json'
+    $rawVersion = $null
+    $sha256     = $null
+    $assetName  = $null
+    if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
+        try {
+            $marker = [IO.File]::ReadAllText($markerPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+            if ($marker.version) { $rawVersion = ([string]$marker.version).Trim() }
+            if ($marker.sha256)  { $sha256     = ([string]$marker.sha256).Trim() }
+            if ($marker.asset)   { $assetName  = ([string]$marker.asset).Trim() }
+        }
+        catch {}
+    }
+    if (-not $rawVersion) {
+        try {
+            $out = & $gitExe --version 2>$null
+            if ($LASTEXITCODE -eq 0 -and $out) { $rawVersion = ([string]($out | Select-Object -First 1)).Trim() }
+        }
+        catch {}
+    }
+    $display = if ($rawVersion) { $rawVersion -replace '^(?i)git\s+version\s+', '' } elseif ($assetName) { $assetName } else { '導入済み' }
+    $verSource = if ($rawVersion) { $rawVersion } else { $assetName }
+    $comparable = ConvertTo-ComparableGitVersion $verSource
+    return [pscustomobject]@{
+        Version           = $display
+        ComparableVersion = $comparable
+        Sha256            = $sha256
+        Asset             = $assetName
+    }
+}
+
 function Get-RunningPortableProcesses([string]$BaseRoot) {
     $prefix = ([IO.Path]::GetFullPath($BaseRoot)).TrimEnd('\') + '\'
     $found = New-Object Collections.Generic.List[object]

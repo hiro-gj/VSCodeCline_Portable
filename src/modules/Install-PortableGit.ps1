@@ -1,38 +1,96 @@
 ﻿# MinGit is Git for Windows without the GUI; no installer or administrator needed.
-function Install-PortableGit {
+function Install-PortableGit([object]$TargetRelease = $null, [string]$LocalZipPath = '', [switch]$Force) {
     $gitRoot = Join-Path $data 'tools\git'
     $gitExe = Join-Path $gitRoot 'cmd\git.exe'
-    if (-not (Test-Path -LiteralPath $gitExe -PathType Leaf)) {
-        Initialize-NetworkConfig
-        Write-Host '[設定] ポータブル Git (MinGit) を導入しています...'
-        $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/git-for-windows/git/releases/latest' -Headers @{ 'User-Agent' = 'VSCode-Portable-Launcher/1.0' } -TimeoutSec 30
-        $arch = (Get-PortableCodeArchitecture $code).Arch
-        $suffix = switch ($arch) { 'arm64' { 'arm64' } 'x64' { '64-bit' } 'x86' { '32-bit' } default { throw "未対応の Git アーキテクチャ: $arch" } }
-        $asset = $release.assets | Where-Object { $_.name -match ('^MinGit-[0-9.]+-' + $suffix + '\.zip$') } | Select-Object -First 1
-        if (-not $asset -or $asset.digest -notmatch '^sha256:([a-fA-F0-9]{64})$') { throw 'SHA-256 付きの公式 MinGit ZIP が見つかりません。' }
-        $expectedHash = $Matches[1]
-        $archive = Join-Path $data ('tmp\' + $asset.name)
-        Save-UrlToFile $asset.browser_download_url $archive 'ポータブル Git をダウンロードしています'
-        if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ine $expectedHash) { throw 'MinGit の SHA-256 検証に失敗しました。' }
-        $stage = Join-Path $data ('tmp\git-' + [guid]::NewGuid().ToString('N'))
-        Expand-ZipArchiveFast $archive $stage
-        $stagedExe = Join-Path $stage 'cmd\git.exe'
-        if (-not (Test-Path -LiteralPath $stagedExe -PathType Leaf)) { throw "MinGit の展開内容が不正です: $stage" }
-        $version = & $stagedExe --version
-        if ($LASTEXITCODE -ne 0) { throw 'MinGit の動作確認に失敗しました。' }
-        [void][IO.Directory]::CreateDirectory($gitRoot)
-        # Copy also repairs an interrupted install; cmd/git.exe is copied last.
-        foreach ($item in (Get-ChildItem -LiteralPath $stage | Where-Object Name -ne 'cmd')) {
-            Copy-Item -LiteralPath $item.FullName -Destination $gitRoot -Recurse -Force
+    if ($Force -or -not [string]::IsNullOrWhiteSpace($LocalZipPath) -or -not (Test-Path -LiteralPath $gitExe -PathType Leaf)) {
+        $archive = $null
+        $expectedHash = ''
+        $assetName = ''
+        if (-not [string]::IsNullOrWhiteSpace($LocalZipPath)) {
+            if (-not (Test-Path -LiteralPath $LocalZipPath -PathType Leaf)) {
+                throw "指定された MinGit ZIP が見つかりません: $LocalZipPath"
+            }
+            Write-Host "[設定] ローカル ZIP からポータブル Git (MinGit) を導入／更新しています..."
+            $archive = $LocalZipPath
+            $assetName = Split-Path -Leaf $LocalZipPath
+            $expectedHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
         }
-        Copy-Item -LiteralPath (Join-Path $stage 'cmd') -Destination $gitRoot -Recurse -Force
-        Write-PortableJson (Join-Path $gitRoot 'portable-install.json') @{ version = $version; sha256 = $expectedHash; asset = $asset.name }
+        else {
+            Initialize-NetworkConfig
+            Write-Host '[設定] ポータブル Git (MinGit) を導入／更新しています...'
+            $release = if ($TargetRelease) { $TargetRelease } else {
+                Invoke-RestMethod -Uri 'https://api.github.com/repos/git-for-windows/git/releases/latest' -Headers @{ 'User-Agent' = 'VSCode-Portable-Launcher/1.0' } -TimeoutSec 30
+            }
+            $arch = (Get-PortableCodeArchitecture $code).Arch
+            $suffix = switch ($arch) { 'arm64' { 'arm64' } 'x64' { '64-bit' } 'x86' { '32-bit' } default { throw "未対応の Git アーキテクチャ: $arch" } }
+            $asset = $release.assets | Where-Object { $_.name -match ('^MinGit-[0-9.]+-' + $suffix + '\.zip$') } | Select-Object -First 1
+            if (-not $asset -or $asset.digest -notmatch '^sha256:([a-fA-F0-9]{64})$') { throw 'SHA-256 付きの公式 MinGit ZIP が見つかりません。' }
+            $expectedHash = $Matches[1]
+            $assetName = [string]$asset.name
+            $archive = Join-Path $data ('tmp\' + $assetName)
+            if (-not (Test-Path -LiteralPath $archive -PathType Leaf) -or (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ine $expectedHash) {
+                Save-UrlToFile $asset.browser_download_url $archive 'ポータブル Git をダウンロードしています'
+            }
+            if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ine $expectedHash) { throw 'MinGit の SHA-256 検証に失敗しました。' }
+        }
+        $stage = Join-Path $data ('tmp\git-' + [guid]::NewGuid().ToString('N'))
+        try {
+            Expand-ZipArchiveFast $archive $stage
+            $stagedExe = Join-Path $stage 'cmd\git.exe'
+            if (-not (Test-Path -LiteralPath $stagedExe -PathType Leaf)) { throw "MinGit の展開内容が不正です: $stage" }
+            $version = & $stagedExe --version
+            if ($LASTEXITCODE -ne 0) { throw 'MinGit の動作確認に失敗しました。' }
+            [void][IO.Directory]::CreateDirectory($gitRoot)
+            # Copy also repairs an interrupted install; cmd/git.exe is copied last.
+            foreach ($item in (Get-ChildItem -LiteralPath $stage | Where-Object Name -ne 'cmd')) {
+                Copy-Item -LiteralPath $item.FullName -Destination $gitRoot -Recurse -Force
+            }
+            Copy-Item -LiteralPath (Join-Path $stage 'cmd') -Destination $gitRoot -Recurse -Force
+            Write-PortableJson (Join-Path $gitRoot 'portable-install.json') @{ version = ([string]($version | Select-Object -First 1)).Trim(); sha256 = $expectedHash.ToLowerInvariant(); asset = $assetName }
+        }
+        finally {
+            if (Test-Path -LiteralPath $stage) {
+                Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
     }
     $version = & $gitExe --version
     if ($LASTEXITCODE -ne 0) { throw "ポータブル Git を実行できません: $gitExe" }
     Write-Host "[Git] $version"
     Initialize-PortableGitConfig
     Initialize-PortableSshShims
+}
+
+function Update-GitOnline([object]$PrefetchedRelease) {
+    $curGit = Get-InstalledPortableGitInfo
+    $rel = if ($PrefetchedRelease) { $PrefetchedRelease } else {
+        Write-Host 'GitHub 公式リリースへポータブル Git (MinGit) の最新バージョンを確認しています...'
+        Get-LatestPortableGitRelease
+    }
+    $curLabel = if ($curGit) { $curGit.Version } else { '未インストール' }
+    Write-Host "  ポータブル Git : 現在 $curLabel -> 最新 $($rel.Version)"
+    $sameHash = ($curGit -and $curGit.Sha256 -and $rel.Sha256 -and ($curGit.Sha256 -ieq $rel.Sha256))
+    $cmp = if ($curGit) { Compare-VersionString $curGit.ComparableVersion $rel.ComparableVersion } else { -1 }
+    if (-not $curGit) {
+        if (-not (Confirm-Action "ポータブル Git ($($rel.Version)) をインストールしますか？")) { return $false }
+    }
+    elseif ($sameHash -or $cmp -ge 0) {
+        Write-Host '  -> ポータブル Git は既に最新バージョンです。' -ForegroundColor Green
+        if (-not (Confirm-Action 'ポータブル Git を強制再インストールしますか？')) { return $false }
+    }
+    else {
+        if (-not (Confirm-Action "ポータブル Git を $curLabel から $($rel.Version) へアップデートしますか？")) { return $false }
+    }
+    if (-not (Wait-PortableCodeClosed -Required $false)) {
+        Write-Host '[中止] ポータブル Git の更新をキャンセルしました。'
+        return $false
+    }
+    Install-PortableGit -TargetRelease $rel.RawRelease -Force
+    Initialize-Portable
+    $afterGit = Get-InstalledPortableGitInfo
+    $afterLabel = if ($afterGit) { $afterGit.Version } else { $rel.Version }
+    Write-Host "[完了] ポータブル Git バージョン: $afterLabel" -ForegroundColor Green
+    return $true
 }
 
 function Initialize-PortableSshShims {

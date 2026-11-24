@@ -9,6 +9,10 @@ function Show-MainMenu {
         $vsMainLabel = if ($vsMain.Version) { "$($vsMain.Version) ($($vsMain.Arch) / $($vsMain.Quality))" } elseif (Test-Path -LiteralPath $code -PathType Leaf) { 'バージョン不明' } else { '未検出 ([6] から導入可)' }
         $clineMainVer = Get-InstalledExtensionVersion $clineExtensionId
         $clineMainLabel = if ($clineMainVer) { $clineMainVer } else { '未インストール' }
+        $mcpMainVer = Get-InstalledPlaywrightMcpVersion
+        $mcpMainLabel = if ($mcpMainVer) { $mcpMainVer } else { '未インストール' }
+        $gitMainInfo = Get-InstalledPortableGitInfo
+        $gitMainLabel = if ($gitMainInfo) { "$($gitMainInfo.Version) ($data\tools\git\cmd\git.exe)" } else { "未インストール ($data\tools\git\cmd\git.exe)" }
         Write-Host ''
         Write-Host '============================================================'
         Write-Host '  VSCode ポータブルモード ランチャー & セットアップ'
@@ -16,7 +20,8 @@ function Show-MainMenu {
         Write-Host "  対象フォルダ : $root"
         Write-Host "  VSCode 本体  : $vsMainLabel"
         Write-Host "  Cline 拡張   : $clineMainLabel"
-        Write-Host "  Git コマンド : $data\tools\git\cmd\git.exe"
+        Write-Host "  PlaywrightMCP: $mcpMainLabel"
+        Write-Host "  Git コマンド : $gitMainLabel"
         Write-Host "  VSCodeデータ : $data\user-data"
         Write-Host "  一時フォルダ : $data\tmp"
         Write-Host "  Clineルート  : $cline （バッチ経由の起動時に適用）"
@@ -26,7 +31,7 @@ function Show-MainMenu {
         Write-Host '  [3] ポータブル用フォルダ・初期設定を作成／修復する (起動しない)'
         Write-Host '  [4] ポータブルデータフォルダ (data) を開く'
         Write-Host '  [5] (オプション) 通常版 VSCode / Cline から設定・拡張機能をコピー'
-        Write-Host '  [6] VSCode / Cline のアップデート管理 (確認・オンライン更新・ZIP/VSIX)'
+        Write-Host '  [6] VSCode / Cline / MCP / Git のアップデート管理 (確認・オンライン更新・ローカル適用)'
         Write-Host '  [0] 終了'
         $selection = Read-Host '番号を入力してください [Enter=1]'
         if ([string]::IsNullOrWhiteSpace($selection)) { $selection = '1' }

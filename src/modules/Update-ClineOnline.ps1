@@ -27,6 +27,7 @@ function Invoke-PortableCodeCli([string[]]$CliArgs) {
         }
     }
     finally { $proc.Dispose() }
+    Initialize-Portable
 }
 
 function Update-ClineOnline([string]$PrefetchedVersion, [switch]$AskOtherExtensions) {
@@ -74,6 +75,10 @@ function Update-ClineOnline([string]$PrefetchedVersion, [switch]$AskOtherExtensi
         Write-Host '導入済み拡張機能の更新を実行しています...'
         Invoke-PortableCodeCli @('--update-extensions')
         Write-Host '[完了] 拡張機能の更新チェックが完了しました。' -ForegroundColor Green
+    }
+    Initialize-Portable
+    if ((Get-Command Set-PortableJapanese -ErrorAction SilentlyContinue) -and (Get-InstalledExtensionVersion 'MS-CEINTL.vscode-language-pack-ja')) {
+        Set-PortableJapanese
     }
     return $true
 }

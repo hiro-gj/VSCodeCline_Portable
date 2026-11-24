@@ -48,9 +48,12 @@ function Set-PortableMcpSettings {
     if (-not $server.PSObject.Properties['env'] -or $null -eq $server.env) {
         Set-PortableProperty $server 'env' ([pscustomobject]@{})
     }
-    Set-PortableProperty $server.env 'ELECTRON_RUN_AS_NODE'     '1'
-    Set-PortableProperty $server.env 'PLAYWRIGHT_BROWSERS_PATH' ([string](Join-Path $mcpRoot 'browsers'))
-    Set-PortableProperty $server.env 'USERPROFILE'              ([string]$paths.Home)
+    if ($server.env.PSObject.Properties['PLAYWRIGHT_BROWSERS_PATH']) {
+        $server.env.PSObject.Properties.Remove('PLAYWRIGHT_BROWSERS_PATH')
+    }
+    Set-PortableProperty $server.env 'ELECTRON_RUN_AS_NODE'             '1'
+    Set-PortableProperty $server.env 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD' '1'
+    Set-PortableProperty $server.env 'USERPROFILE'                      ([string]$paths.Home)
     Set-PortableProperty $server.env 'HOME'                     ([string]$paths.Home)
     if ($paths.Home -match '^([A-Za-z]:)(\\.*)$') {
         Set-PortableProperty $server.env 'HOMEDRIVE' $Matches[1]
@@ -133,49 +136,16 @@ function Sync-PortableMcpScripts([string]$McpRoot) {
     }
 }
 
-function Install-PortableChromium([string]$PlaywrightCliRoot, [string]$BrowserPath, [switch]$ForcePlan, [switch]$CleanUnused) {
-    $browserMarker = Join-Path $BrowserPath 'portable-install.json'
-    $playwrightPackage = [IO.File]::ReadAllText((Join-Path $PlaywrightCliRoot 'node_modules\playwright\package.json'), [Text.Encoding]::UTF8) | ConvertFrom-Json
-    $installedBrowser = if (Test-Path -LiteralPath $browserMarker -PathType Leaf) { [IO.File]::ReadAllText($browserMarker, [Text.Encoding]::UTF8) | ConvertFrom-Json } else { $null }
-    if (-not $ForcePlan -and $installedBrowser -and $installedBrowser.version -eq $playwrightPackage.version) {
-        return @()
-    }
-    Write-Host "[Setup] Installing portable Chromium (Playwright $($playwrightPackage.version))..."
-    # Playwright's directory-lock heartbeat is unreliable on exFAT. Ask its
-    # CLI for the official platform-specific downloads, then extract them
-    # without that lock. The final smoke test checks the actual executables.
-    $plan = Invoke-PortableNode -NodeArgs @((Join-Path $PlaywrightCliRoot 'node_modules\playwright\cli.js'), 'install', '--dry-run', '--no-shell', 'chromium') -Environment @{ PLAYWRIGHT_BROWSERS_PATH = $BrowserPath } -CaptureOutput
-    $downloads = [regex]::Matches($plan, '(?m)^  Install location:\s+([^\r\n]+)\r?\n  Download url:\s+(https://[^\r\n]+)')
-    if ($downloads.Count -lt 1) { throw "Cannot parse Playwright browser download plan: $plan" }
-    $activeLeafNames = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-    foreach ($download in $downloads) {
-        $destination = $download.Groups[1].Value.Trim()
-        $prefix = [IO.Path]::GetFullPath($BrowserPath).TrimEnd('\') + '\'
-        if (-not [IO.Path]::GetFullPath($destination).StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid browser destination.' }
-        [void]$activeLeafNames.Add((Split-Path -Leaf $destination))
-        $complete = Join-Path $destination 'INSTALLATION_COMPLETE'
-        if (Test-Path -LiteralPath $complete) { continue }
-        $zip = Join-Path $data ('tmp\' + (Split-Path -Leaf $destination) + '.zip')
-        Save-UrlToFile $download.Groups[2].Value.Trim() $zip 'Downloading portable browser component'
-        Expand-ZipArchiveFast $zip $destination
-        [IO.File]::WriteAllText($complete, '')
-    }
-    Write-PortableJson $browserMarker @{ version = [string]$playwrightPackage.version }
-    return @($activeLeafNames)
-}
-
-function Remove-UnusedPortableChromium([string]$PlaywrightCliRoot, [string]$BrowserPath) {
+function Remove-LegacyPortableBrowsers([string]$BrowserPath) {
     if (-not (Test-Path -LiteralPath $BrowserPath -PathType Container)) { return }
-    $plan = Invoke-PortableNode -NodeArgs @((Join-Path $PlaywrightCliRoot 'node_modules\playwright\cli.js'), 'install', '--dry-run', '--no-shell', 'chromium') -Environment @{ PLAYWRIGHT_BROWSERS_PATH = $BrowserPath } -CaptureOutput
-    $downloads = [regex]::Matches($plan, '(?m)^  Install location:\s+([^\r\n]+)\r?\n  Download url:\s+(https://[^\r\n]+)')
-    if ($downloads.Count -lt 1) { return }
-    $activeLeafNames = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-    foreach ($download in $downloads) {
-        [void]$activeLeafNames.Add((Split-Path -Leaf $download.Groups[1].Value.Trim()))
-    }
-    foreach ($sub in (Get-ChildItem -LiteralPath $BrowserPath -Directory -ErrorAction SilentlyContinue)) {
-        if (-not $activeLeafNames.Contains($sub.Name)) {
-            try { Remove-Item -LiteralPath $sub.FullName -Recurse -Force -ErrorAction Stop } catch {}
+    $marker = Join-Path $BrowserPath 'portable-install.json'
+    if (Test-Path -LiteralPath $marker -PathType Leaf) {
+        try {
+            Remove-Item -LiteralPath $BrowserPath -Recurse -Force -ErrorAction Stop
+            Write-Host "[整理] 旧ポータブル Chromium フォルダを削除しました: $BrowserPath"
+        }
+        catch {
+            Write-Warning "旧ポータブル Chromium フォルダの削除をスキップしました: $BrowserPath ($($_.Exception.Message))"
         }
     }
 }
@@ -222,15 +192,13 @@ function Install-PortablePlaywrightMcp([string]$TargetVersion = '', [string]$Loc
         Write-PortableJson (Join-Path $stageDir 'package.json') @{
             name = 'portable-playwright-mcp'; private = $true; dependencies = @{ '@playwright/mcp' = $depSpec }
         }
-        Invoke-PortableNode -NodeArgs @($npmCli, 'install', $installSpec, '--prefix', $stageDir, '--cache', (Join-Path $data 'tmp\npm-cache'), '--no-audit', '--no-fund', '--ignore-scripts', '--bin-links=false') -WorkingDirectory $stageDir
+        Invoke-PortableNode -NodeArgs @($npmCli, 'install', $installSpec, '--prefix', $stageDir, '--cache', (Join-Path $data 'tmp\npm-cache'), '--no-audit', '--no-fund', '--ignore-scripts', '--bin-links=false') -Environment @{ PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = '1' } -WorkingDirectory $stageDir
         $stagedCli = Join-Path $stageDir 'node_modules\@playwright\mcp\cli.js'
         if (-not (Test-Path -LiteralPath $stagedCli -PathType Leaf)) {
             throw 'Playwright MCP の展開検証に失敗しました (cli.js が見つかりません)。'
         }
         $stagedPkg = [IO.File]::ReadAllText((Join-Path $stageDir 'node_modules\@playwright\mcp\package.json'), [Text.Encoding]::UTF8) | ConvertFrom-Json
         $installedVer = [string]$stagedPkg.version
-
-        [void](Install-PortableChromium -PlaywrightCliRoot $stageDir -BrowserPath $browserPath -ForcePlan:$Force.IsPresent)
 
         [void][IO.Directory]::CreateDirectory($backupDir)
         $movedBackups = New-Object 'Collections.Generic.List[string]'
@@ -272,7 +240,7 @@ function Install-PortablePlaywrightMcp([string]$TargetVersion = '', [string]$Loc
             }
             throw
         }
-        Remove-UnusedPortableChromium -PlaywrightCliRoot $mcpRoot -BrowserPath $browserPath
+        Remove-LegacyPortableBrowsers -BrowserPath $browserPath
         return $true
     }
     finally {
@@ -294,7 +262,7 @@ function Update-McpOnline([object]$PrefetchedRelease) {
     }
     elseif ((Compare-VersionString $curVer $rel.Version) -ge 0) {
         Write-Host '  -> Playwright MCP は既に最新バージョンです。' -ForegroundColor Green
-        if (-not (Confirm-Action 'Playwright MCP と専用 Chromium を強制再インストール／再検証しますか？')) { return $false }
+        if (-not (Confirm-Action 'Playwright MCP を強制再インストール／再検証しますか？')) { return $false }
     }
     else {
         if (-not (Confirm-Action "Playwright MCP を $curVer から $($rel.Version) へアップデートしますか？")) { return $false }
@@ -305,7 +273,7 @@ function Update-McpOnline([object]$PrefetchedRelease) {
     }
     [void](Install-PortablePlaywrightMcp -TargetVersion $rel.Version -Force -VerifyAfterSwap)
     $afterVer = Get-InstalledPlaywrightMcpVersion
-    Write-Host "[完了] Playwright MCP バージョン: $afterVer （専用 Chromium 同期・動作確認済み）" -ForegroundColor Green
+    Write-Host "[完了] Playwright MCP バージョン: $afterVer （ローカル Microsoft Edge 連携・動作確認済み）" -ForegroundColor Green
     return $true
 }
 
@@ -340,8 +308,12 @@ function Install-PortableEnvironment {
     Write-PortableStage 5 'Playwright MCP を確認しています'
     $mcpRoot = Join-Path $cline 'mcp\playwright'
     [void](Install-PortablePlaywrightMcp)
-    Write-PortableStage 6 'ポータブル Chromium を確認しています'
-    [void](Install-PortableChromium -PlaywrightCliRoot $mcpRoot -BrowserPath (Join-Path $mcpRoot 'browsers'))
+    Write-PortableStage 6 'ローカル Microsoft Edge を確認しています'
+    $edgeExe = Get-LocalEdgeExecutablePath
+    if (-not $edgeExe) {
+        throw 'ローカル PC に Microsoft Edge (msedge.exe) が見つかりません。Microsoft Edge をインストールしてから再実行してください。'
+    }
+    Remove-LegacyPortableBrowsers -BrowserPath (Join-Path $mcpRoot 'browsers')
     Initialize-Portable
     Write-PortableStage 7 'ブラウザーと MCP の動作を確認しています'
     try { Invoke-PortableNode @((Join-Path $mcpRoot 'verify-mcp.js')) }

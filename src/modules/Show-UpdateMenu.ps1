@@ -27,7 +27,7 @@ function Show-UpdateMenu {
         Write-Host '  [2] すべてまとめてオンラインアップデート (VSCode / Cline / MCP / Git)'
         Write-Host '  [3] VSCode 本体のみオンラインアップデート'
         Write-Host '  [4] Cline (および他の拡張機能) をオンラインアップデート'
-        Write-Host '  [5] Playwright MCP (および専用 Chromium) をオンラインアップデート'
+        Write-Host '  [5] Playwright MCP をオンラインアップデート'
         Write-Host '  [6] ポータブル Git (MinGit) をオンラインアップデート'
         Write-Host '  [7] ローカルファイル (.zip / .vsix / .tgz) からオフライン更新'
         Write-Host '  [0] メインメニューに戻る'

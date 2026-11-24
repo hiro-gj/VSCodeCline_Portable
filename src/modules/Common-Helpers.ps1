@@ -135,6 +135,66 @@ function Set-PortableRestrictedDirectoryAcl([string]$TargetPath) {
     }
 }
 
+function Get-LocalEdgeExecutablePath {
+    $candidates = New-Object Collections.Generic.List[string]
+    foreach ($baseDir in @(
+        ${env:ProgramFiles(x86)},
+        $env:ProgramFiles,
+        $env:ProgramW6432,
+        $script:HostLocalAppData,
+        $env:LOCALAPPDATA
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($baseDir)) {
+            $candidates.Add((Join-Path $baseDir 'Microsoft\Edge\Application\msedge.exe'))
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:SystemDrive)) {
+        $sysRoot = $env:SystemDrive.TrimEnd('\') + '\'
+        $candidates.Add((Join-Path $sysRoot 'Program Files (x86)\Microsoft\Edge\Application\msedge.exe'))
+        $candidates.Add((Join-Path $sysRoot 'Program Files\Microsoft\Edge\Application\msedge.exe'))
+    }
+    foreach ($regPath in @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe'
+    )) {
+        try {
+            if (Test-Path -LiteralPath $regPath) {
+                $regKey = Get-Item -LiteralPath $regPath -ErrorAction SilentlyContinue
+                if ($regKey) {
+                    $val = $regKey.GetValue('')
+                    if ($val) { $candidates.Add(([string]$val).Trim().Trim('"')) }
+                }
+            }
+        } catch {}
+    }
+    foreach ($regUpdatePath in @(
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{56EB18F8-B008-4CBD-B6D2-8C97FE7E9062}',
+        'HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{56EB18F8-B008-4CBD-B6D2-8C97FE7E9062}',
+        'HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{56EB18F8-B008-4CBD-B6D2-8C97FE7E9062}'
+    )) {
+        try {
+            if (Test-Path -LiteralPath $regUpdatePath) {
+                $regKey = Get-Item -LiteralPath $regUpdatePath -ErrorAction SilentlyContinue
+                if ($regKey) {
+                    $loc = $regKey.GetValue('location')
+                    if ($loc) { $candidates.Add((Join-Path ([string]$loc).Trim() 'msedge.exe')) }
+                }
+            }
+        } catch {}
+    }
+
+    foreach ($candidate in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        try {
+            $full = [IO.Path]::GetFullPath($candidate)
+            if (([IO.Path]::GetFileName($full) -ieq 'msedge.exe') -and (Test-Path -LiteralPath $full -PathType Leaf)) {
+                return $full
+            }
+        } catch {}
+    }
+    return $null
+}
+
 function Set-PortableChildEnvironment(
     [Diagnostics.ProcessStartInfo]$Info,
     [hashtable]$ExtraEnvironment = @{},
@@ -158,6 +218,7 @@ function Set-PortableChildEnvironment(
                 'XDG_DATA_HOME',
                 'XDG_STATE_HOME',
                 'XDG_CACHE_HOME',
+                'PLAYWRIGHT_BROWSERS_PATH',
                 'OneDrive',
                 'OneDriveConsumer',
                 'OneDriveCommercial'
@@ -209,6 +270,7 @@ function Set-PortableChildEnvironment(
     # 5. npm 設定・キャッシュの閉じ込め
     $Info.EnvironmentVariables['npm_config_cache']      = $paths.NpmCacheDir
     $Info.EnvironmentVariables['npm_config_userconfig'] = $paths.NpmUserConfig
+    $Info.EnvironmentVariables['PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD'] = '1'
     $Info.EnvironmentVariables['PORTABLE_ENV_INITIALIZED'] = '1'
 
     if ($IncludeGitPath) {

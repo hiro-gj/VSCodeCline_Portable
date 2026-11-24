@@ -23,9 +23,10 @@ param(
 [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
 $ErrorActionPreference = 'Stop'
 
-# 通常版からの設定引き継ぎ（Copy-Optional.ps1）用にホスト環境変数を退避
-$script:HostUserProfile = $env:USERPROFILE
-$script:HostAppData     = $env:APPDATA
+# 通常版からの設定引き継ぎ（Copy-Optional.ps1）・ローカル Edge 検出用にホスト環境変数を退避
+$script:HostUserProfile  = $env:USERPROFILE
+$script:HostAppData      = $env:APPDATA
+$script:HostLocalAppData = $env:LOCALAPPDATA
 
 $sourceRoot  = Split-Path -LiteralPath $env:PORTABLE_LAUNCH_SELF
 $modulesRoot = Join-Path $sourceRoot 'modules'

@@ -2,19 +2,30 @@
 
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-process.env.PLAYWRIGHT_BROWSERS_PATH = path.join(__dirname, 'browsers');
+const { findLocalEdgeExecutable } = require('./start-mcp.js');
+
+delete process.env.PLAYWRIGHT_BROWSERS_PATH;
+process.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = '1';
 
 async function main() {
+  const edgePath = findLocalEdgeExecutable();
   const { chromium } = require('playwright');
-  const browser = await chromium.launch({ headless: true, executablePath: chromium.executablePath() });
+  const browser = await chromium.launch({
+    channel: 'msedge',
+    executablePath: edgePath,
+    headless: true,
+  });
   try {
     const page = await browser.newPage();
     await page.goto('data:text/html,<title>Portable browser OK</title>');
     if (await page.title() !== 'Portable browser OK') throw new Error('Browser smoke test failed');
   } finally { await browser.close(); }
 
+  const childEnv = { ...process.env, ELECTRON_RUN_AS_NODE: '1', PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' };
+  delete childEnv.PLAYWRIGHT_BROWSERS_PATH;
+
   const child = spawn(process.execPath, [path.join(__dirname, 'start-mcp.js'), '--headless'], {
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+    env: childEnv, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
   });
   try {
     await new Promise((resolve, reject) => {
@@ -50,6 +61,6 @@ async function main() {
       } });
     });
   } finally { child.kill(); }
-  console.log('[PASS] Portable Chromium launch and MCP initialize/tools/list');
+  console.log('[PASS] Local Microsoft Edge launch and MCP initialize/tools/list');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -26,5 +26,11 @@ function Copy-FromStandardEnvironment {
     Copy-Optional 'VSCode ユーザー設定' (Join-Path $srcAppData 'Code\User')               (Join-Path $data 'user-data\User')
     Copy-Optional 'VSCode 拡張機能'     (Join-Path $srcUserProfile '.vscode\extensions')  (Join-Path $data 'extensions')
     Copy-Optional 'Cline 設定'          (Join-Path $srcUserProfile '.cline\data\settings') (Join-Path $cline 'data\settings')
+    Initialize-Portable
+    if ((Get-Command Get-InstalledExtensionVersion -ErrorAction SilentlyContinue) -and
+        (Get-Command Set-PortableJapanese -ErrorAction SilentlyContinue) -and
+        (Get-InstalledExtensionVersion 'MS-CEINTL.vscode-language-pack-ja')) {
+        Set-PortableJapanese
+    }
     return $true
 }

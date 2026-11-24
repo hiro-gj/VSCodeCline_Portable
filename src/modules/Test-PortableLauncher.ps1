@@ -131,7 +131,108 @@ try {
     Assert (-not $childInfo.EnvironmentVariables.ContainsKey('OneDrive')) 'OneDrive variable was not stripped'
     Assert ($childInfo.EnvironmentVariables['PATH'].StartsWith((Join-Path $data 'tools\git\cmd') + ';' + (Join-Path $data 'tools\bin') + ';')) 'Child PATH order incorrect'
     Assert ($env:USERPROFILE -ceq $origUserProfile) 'Parent USERPROFILE was mutated'
+    $vsSettings = [IO.File]::ReadAllText((Join-Path $data 'user-data\User\settings.json'), [Text.Encoding]::UTF8) | ConvertFrom-Json
+    Assert ($vsSettings.'extensions.autoUpdate' -eq $false) 'extensions.autoUpdate was not disabled by default'
     Write-Host '[PASS] Modules layout, .cline\rules deployment, legacy migration, and full portable isolation'
+
+    # 5. Verify multi-version Cline exFAT MCP compatibility patch and Set-PortableMcpSettings
+    $clineVariants = [ordered]@{
+        '4.1.26' = @{
+            Source   = 'async function Ok(t){let e=aA.join(t,JA.mcpSettings),r=`${e}.tmp.${process.pid}.${Date.now()}`;try{await db.default.writeFile(r,JSON.stringify({mcpServers:{}},null,2),{encoding:"utf8",flag:"wx"}),await db.default.link(r,e)}catch(i){if(i.code!=="EEXIST")throw i}finally{await db.default.unlink(r).catch(()=>{})}return e}'
+            Expected = 'await db.default.copyFile(r,e,1)'
+            Patched  = $true
+        }
+        '4.1.27' = @{
+            Source   = 'async function Dk(t){let e=oA.join(t,ey.mcpSettings),r=`${e}.tmp.${process.pid}.${Date.now()}`;try{await cb.default.writeFile(r,JSON.stringify({mcpServers:{}},null,2),{encoding:"utf8",flag:"wx"}),await cb.default.link(r,e)}catch(i){if(i.code!=="EEXIST")throw i}finally{await cb.default.unlink(r).catch(()=>{})}return e}'
+            Expected = 'await cb.default.copyFile(r,e,1)'
+            Patched  = $true
+        }
+        '4.99.0' = @{
+            Source   = 'const z9=async n=>{const a=(0,p1.join)(n,G2.mcpSettings);const b=`${a}.tmp.${process.pid}`;try{await (0,fs1.writeFile)(b,"{}",{encoding:"utf-8",flag:"wx"});await (0,fs1.link)(b,a)}catch(c){if(c.code!=="EEXIST")throw c}finally{await (0,fs1.unlink)(b).catch(()=>{})}return a}'
+            Expected = 'await (0,fs1.copyFile)(b,a,1)'
+            Patched  = $true
+        }
+        '5.0.0'  = @{
+            Source   = 'async function Up(t){let e=oA.join(t,ey.mcpSettings);await cb.default.writeFile(e,"{}",{encoding:"utf8",flag:"wx"}).catch(i=>{if(i.code!=="EEXIST")throw i});return e}'
+            Expected = 'await cb.default.writeFile(e,"{}",{encoding:"utf8",flag:"wx"})'
+            Patched  = $false
+        }
+    }
+    foreach ($ver in $clineVariants.Keys) {
+        $extFolder = Join-Path $data ("extensions\saoudrizwan.claude-dev-$ver")
+        [void][IO.Directory]::CreateDirectory((Join-Path $extFolder 'dist'))
+        Write-PortableJson (Join-Path $extFolder 'package.json') @{ publisher = 'saoudrizwan'; name = 'claude-dev'; version = $ver }
+        [IO.File]::WriteAllText((Join-Path $extFolder 'dist\extension.js'), $clineVariants[$ver].Source, (New-Object Text.UTF8Encoding($false)))
+    }
+    Repair-ClineMcpExfat -Force
+    $snapshotsAfterFirst = @{}
+    foreach ($ver in $clineVariants.Keys) {
+        $bundlePath = Join-Path $data ("extensions\saoudrizwan.claude-dev-$ver\dist\extension.js")
+        $afterText  = [IO.File]::ReadAllText($bundlePath, [Text.Encoding]::UTF8)
+        $snapshotsAfterFirst[$ver] = $afterText
+        Assert ($afterText.Contains($clineVariants[$ver].Expected)) "Cline $ver was not expectedly handled"
+        $backupFolder = Join-Path $cline ("compatibility\backups\saoudrizwan.claude-dev-$ver")
+        if ($clineVariants[$ver].Patched) {
+            Assert (-not $afterText.Contains('.link(')) "Cline $ver still contains .link("
+            Assert (Test-Path -LiteralPath $backupFolder -PathType Container) "Backup missing for Cline $ver"
+        }
+        else {
+            Assert ($afterText -ceq $clineVariants[$ver].Source) "Upstream-fixed Cline $ver should remain untouched"
+            Assert (-not (Test-Path -LiteralPath $backupFolder)) "Unnecessary backup created for Cline $ver"
+        }
+    }
+    Repair-ClineMcpExfat -Force
+    foreach ($ver in $clineVariants.Keys) {
+        $bundlePath = Join-Path $data ("extensions\saoudrizwan.claude-dev-$ver\dist\extension.js")
+        Assert ([IO.File]::ReadAllText($bundlePath, [Text.Encoding]::UTF8) -ceq $snapshotsAfterFirst[$ver]) "Repair-ClineMcpExfat not idempotent for $ver"
+    }
+
+    $mcpDir = Join-Path $cline 'mcp\playwright'
+    [void][IO.Directory]::CreateDirectory($mcpDir)
+    [IO.File]::WriteAllText((Join-Path $mcpDir 'start-mcp.js'), '// stub', (New-Object Text.UTF8Encoding($false)))
+    $mcpSettingsPath = Join-Path $cline 'data\settings\cline_mcp_settings.json'
+    [IO.File]::WriteAllText($mcpSettingsPath, '', (New-Object Text.UTF8Encoding($false)))
+    Set-PortableMcpSettings
+    $mcpJson = [IO.File]::ReadAllText($mcpSettingsPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    Assert ($mcpJson.mcpServers.playwright.command -eq $code) 'Set-PortableMcpSettings did not set command from empty file'
+    Assert ($mcpJson.mcpServers.playwright.cwd -eq $mcpDir) 'Set-PortableMcpSettings did not set cwd'
+    Assert ($mcpJson.mcpServers.playwright.env.PLAYWRIGHT_BROWSERS_PATH -eq (Join-Path $mcpDir 'browsers')) 'PLAYWRIGHT_BROWSERS_PATH missing'
+
+    Set-PortableProperty $mcpJson.mcpServers 'otherServer' ([pscustomobject]@{ type = 'stdio'; command = 'node' })
+    Set-PortableProperty $mcpJson.mcpServers.playwright 'command' 'Z:\old\Code.exe'
+    Set-PortableProperty $mcpJson.mcpServers.playwright 'autoApprove' @('browser_navigate')
+    Write-PortableJson $mcpSettingsPath $mcpJson
+    Set-PortableMcpSettings
+    $mcpJson2 = [IO.File]::ReadAllText($mcpSettingsPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    Assert ($mcpJson2.mcpServers.playwright.command -eq $code) 'Relocated command was not repaired'
+    Assert ($mcpJson2.mcpServers.playwright.autoApprove[0] -eq 'browser_navigate') 'autoApprove was lost'
+    Assert ($mcpJson2.mcpServers.otherServer.command -eq 'node') 'Custom MCP server was lost'
+    Write-Host '[PASS] Multi-version Cline MCP exFAT fix (4.1.26/4.1.27/future/upstream) and MCP settings resilience'
+
+    # 6. Verify unpinned MCP policy and 4-component metadata / Git force-update / ZIP detection
+    . (Join-Path $modulesRoot 'Get-PortableMetadata.ps1')
+    . (Join-Path $modulesRoot 'Install-FromLocalPackage.ps1')
+    $installEnvSource = [IO.File]::ReadAllText((Join-Path $modulesRoot 'Install-PortableEnvironment.ps1'), [Text.Encoding]::UTF8)
+    $readmeSource = [IO.File]::ReadAllText((Join-Path $repoParent 'README.md'), [Text.Encoding]::UTF8)
+    Assert (-not $installEnvSource.Contains('0.0.85')) 'Hardcoded 0.0.85 pin still present in Install-PortableEnvironment.ps1'
+    Assert (-not $readmeSource.Contains('0.0.85')) 'Hardcoded 0.0.85 pin restriction still present in README.md'
+
+    Assert ((ConvertTo-ComparableGitVersion 'git version 2.56.1.windows.1') -eq '2.56.1.1') 'Comparable Git version (windows.1) mismatch'
+    Assert ((ConvertTo-ComparableGitVersion 'v2.56.1.windows.2') -eq '2.56.1.2') 'Comparable Git version (windows.2) mismatch'
+    Assert ((ConvertTo-ComparableGitVersion 'MinGit-2.56.1-64-bit.zip') -eq '2.56.1.1') 'Comparable Git version (MinGit 3-part) mismatch'
+    Assert ((Compare-VersionString (ConvertTo-ComparableGitVersion '2.56.1.windows.1') (ConvertTo-ComparableGitVersion '2.56.1.windows.2')) -lt 0) 'Git windows.1 -> windows.2 comparison failed'
+
+    [void][IO.Directory]::CreateDirectory((Join-Path $mcpDir 'node_modules\@playwright\mcp'))
+    [IO.File]::WriteAllText((Join-Path $mcpDir 'node_modules\@playwright\mcp\cli.js'), '// cli', (New-Object Text.UTF8Encoding($false)))
+    Write-PortableJson (Join-Path $mcpDir 'node_modules\@playwright\mcp\package.json') @{ name = '@playwright/mcp'; version = '0.0.86' }
+    Assert ((Get-InstalledPlaywrightMcpVersion) -eq '0.0.86') 'Get-InstalledPlaywrightMcpVersion failed'
+
+    Write-PortableJson (Join-Path $data 'tools\git\portable-install.json') @{ version = 'git version 2.56.1.windows.1'; sha256 = ('a' * 64); asset = 'MinGit-2.56.1-64-bit.zip' }
+    $gitInstalled = Get-InstalledPortableGitInfo
+    Assert ($gitInstalled.Version -eq '2.56.1.windows.1') 'Get-InstalledPortableGitInfo display version mismatch'
+    Assert ($gitInstalled.ComparableVersion -eq '2.56.1.1') 'Get-InstalledPortableGitInfo comparable version mismatch'
+    Assert (Test-ZipContainsMinGit $zip) 'Test-ZipContainsMinGit did not detect MinGit fixture archive'
+    Write-Host '[PASS] Unpinned MCP policy and 4-component update metadata (VSCode / Cline / MCP / Git)'
 }
 finally {
     # The target is the unique sandbox created above, never an application folder.

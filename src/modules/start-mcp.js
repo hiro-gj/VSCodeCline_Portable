@@ -4,28 +4,59 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
-// ポータブル Chromium は使用せず、自動ダウンロード関連環境変数も排除する
-delete process.env.PLAYWRIGHT_BROWSERS_PATH;
-process.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = '1';
+function ensurePortableBrowserEnvironment(baseDir = __dirname) {
+  // ポータブル Chromium は使用せず、自動ダウンロード関連環境変数も排除する
+  delete process.env.PLAYWRIGHT_BROWSERS_PATH;
+  process.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = '1';
 
-const clineDirCandidate = path.resolve(__dirname, '..', '..');
-const homeCandidate = path.resolve(clineDirCandidate, '..');
-const dataCandidate = path.resolve(homeCandidate, '..');
-if (path.basename(clineDirCandidate).toLowerCase() === '.cline' &&
-    path.basename(homeCandidate).toLowerCase() === 'home' &&
-    fs.existsSync(dataCandidate)) {
-  const tmpCandidate = path.join(dataCandidate, 'tmp');
-  fs.mkdirSync(tmpCandidate, { recursive: true });
-  const dataPrefix = (path.resolve(dataCandidate).replace(/[\\/]+$/, '') + path.sep).toLowerCase();
-  const isInsidePortableData = value =>
-    typeof value === 'string' && value.length > 0 &&
-    path.resolve(value).toLowerCase().startsWith(dataPrefix);
-  if (!isInsidePortableData(process.env.USERPROFILE)) process.env.USERPROFILE = homeCandidate;
-  if (!isInsidePortableData(process.env.HOME)) process.env.HOME = homeCandidate;
-  if (!isInsidePortableData(process.env.TEMP)) process.env.TEMP = tmpCandidate;
-  if (!isInsidePortableData(process.env.TMP)) process.env.TMP = tmpCandidate;
-  if (!isInsidePortableData(process.env.TMPDIR)) process.env.TMPDIR = tmpCandidate;
+  const clineDirCandidate = path.resolve(baseDir, '..', '..');
+  const homeCandidate = path.resolve(clineDirCandidate, '..');
+  const dataCandidate = path.resolve(homeCandidate, '..');
+  if (path.basename(clineDirCandidate).toLowerCase() === '.cline' &&
+      path.basename(homeCandidate).toLowerCase() === 'home' &&
+      fs.existsSync(dataCandidate)) {
+    const tmpCandidate = path.join(dataCandidate, 'tmp');
+    const appDataRoaming = path.join(dataCandidate, 'appdata', 'Roaming');
+    const appDataLocal = path.join(dataCandidate, 'appdata', 'Local');
+    const appDataLocalLow = path.join(dataCandidate, 'appdata', 'LocalLow');
+
+    // Win32 Shell API (SHGetFolderPath / PathService key 111, 112) が %USERPROFILE%\AppData\* の実在を要求するため事前作成
+    for (const dir of [
+      tmpCandidate,
+      appDataRoaming,
+      appDataLocal,
+      appDataLocalLow,
+      path.join(homeCandidate, 'AppData', 'Roaming'),
+      path.join(homeCandidate, 'AppData', 'Local'),
+      path.join(homeCandidate, 'AppData', 'LocalLow'),
+      path.join(homeCandidate, 'Documents'),
+      path.join(homeCandidate, 'Downloads'),
+      path.join(homeCandidate, 'Desktop'),
+    ]) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    const dataPrefix = (path.resolve(dataCandidate).replace(/[\\/]+$/, '') + path.sep).toLowerCase();
+    const isInsidePortableData = value =>
+      typeof value === 'string' && value.length > 0 &&
+      path.resolve(value).toLowerCase().startsWith(dataPrefix);
+
+    if (!isInsidePortableData(process.env.USERPROFILE)) process.env.USERPROFILE = homeCandidate;
+    if (!isInsidePortableData(process.env.HOME)) process.env.HOME = homeCandidate;
+    const homeMatch = /^([A-Za-z]:)(\\.*)$/.exec(process.env.USERPROFILE);
+    if (homeMatch) {
+      process.env.HOMEDRIVE = homeMatch[1];
+      process.env.HOMEPATH = homeMatch[2];
+    }
+    if (!isInsidePortableData(process.env.APPDATA)) process.env.APPDATA = appDataRoaming;
+    if (!isInsidePortableData(process.env.LOCALAPPDATA)) process.env.LOCALAPPDATA = appDataLocal;
+    if (!isInsidePortableData(process.env.TEMP)) process.env.TEMP = tmpCandidate;
+    if (!isInsidePortableData(process.env.TMP)) process.env.TMP = tmpCandidate;
+    if (!isInsidePortableData(process.env.TMPDIR)) process.env.TMPDIR = tmpCandidate;
+  }
 }
+
+ensurePortableBrowserEnvironment();
 
 function isValidEdgeExecutable(candidate) {
   if (typeof candidate !== 'string' || !candidate.trim()) return false;
@@ -123,6 +154,11 @@ if (require.main === module) {
     }
   }
 
+  // サンドボックスにより操作が制限される環境での明示指定時のみ --no-sandbox を付与
+  if (process.env.PORTABLE_PLAYWRIGHT_NO_SANDBOX === '1' && !hasFlag('--no-sandbox')) {
+    process.argv.push('--no-sandbox');
+  }
+
   const hasEndpoint = hasFlag('--cdp-endpoint', '--endpoint');
   const hasExecPath = hasFlag('--executable-path');
   const browserArg = getFlagValue('--browser');
@@ -138,4 +174,4 @@ if (require.main === module) {
   require(path.join(__dirname, 'node_modules', '@playwright', 'mcp', 'cli.js'));
 }
 
-module.exports = { findLocalEdgeExecutable, isValidEdgeExecutable };
+module.exports = { findLocalEdgeExecutable, isValidEdgeExecutable, ensurePortableBrowserEnvironment };

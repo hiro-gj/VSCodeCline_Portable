@@ -1,4 +1,4 @@
-﻿# Portable bootstrap. Paths are derived by the launcher, never from a drive letter.
+# Portable bootstrap. Paths are derived by the launcher, never from a drive letter.
 function Write-PortableJson([string]$Path, $Value) {
     $json = ($Value | ConvertTo-Json -Depth 50) + "`r`n"
     if ((Test-Path -LiteralPath $Path) -and [IO.File]::ReadAllText($Path) -ceq $json) { return }
@@ -192,7 +192,7 @@ function Install-PortablePlaywrightMcp([string]$TargetVersion = '', [string]$Loc
         Write-PortableJson (Join-Path $stageDir 'package.json') @{
             name = 'portable-playwright-mcp'; private = $true; dependencies = @{ '@playwright/mcp' = $depSpec }
         }
-        Invoke-PortableNode -NodeArgs @($npmCli, 'install', $installSpec, '--prefix', $stageDir, '--cache', (Join-Path $data 'tmp\npm-cache'), '--no-audit', '--no-fund', '--ignore-scripts', '--bin-links=false') -Environment @{ PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = '1' } -WorkingDirectory $stageDir
+        Invoke-PortableNode -NodeArgs @($npmCli, 'install', $installSpec, '--prefix', $stageDir, '--cache', (Join-Path $data 'tmp\npm-cache'), '--no-audit', '--no-fund', '--no-update-notifier', '--ignore-scripts', '--bin-links=false') -Environment @{ PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = '1' } -WorkingDirectory $stageDir
         $stagedCli = Join-Path $stageDir 'node_modules\@playwright\mcp\cli.js'
         if (-not (Test-Path -LiteralPath $stagedCli -PathType Leaf)) {
             throw 'Playwright MCP の展開検証に失敗しました (cli.js が見つかりません)。'
@@ -316,7 +316,6 @@ function Install-PortableEnvironment {
     Remove-LegacyPortableBrowsers -BrowserPath (Join-Path $mcpRoot 'browsers')
     Initialize-Portable
     Write-PortableStage 7 'ブラウザーと MCP の動作を確認しています'
-    try { Invoke-PortableNode @((Join-Path $mcpRoot 'verify-mcp.js')) }
-    finally { Write-Progress -Id 10 -Activity 'ポータブル環境の準備' -Completed }
+    Invoke-PortableNode @((Join-Path $mcpRoot 'verify-mcp.js'))
     Write-Host "[Ready] Portable VS Code / Japanese / Git / Cline / Playwright MCP: $root" -ForegroundColor Green
 }

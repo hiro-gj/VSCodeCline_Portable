@@ -11,18 +11,214 @@ function Wait-Menu {
     [void](Read-Host 'Enter キーでメニューに戻ります')
 }
 
-function Write-PortableStage([int]$Step, [string]$Message) {
-    Write-Host "[起動中... $Step/7] $Message"
+$script:PortableProgressStageId    = 10
+$script:PortableProgressProcessId  = 11
+$script:PortableProgressDownloadId = 12
+$script:PortableProgressExtractId  = 13
+$script:PortableProgressCheckId    = 14
+$script:PortableStageActive        = $false
+$script:PortableStageActivity      = 'ポータブル環境を準備しています（処理段階の目安）'
+$script:ActiveProgressIds          = New-Object 'Collections.Generic.HashSet[int]'
+$script:SavedConsoleOutputEncoding = $null
+$script:PortableProgressHandler    = $null
+
+function Initialize-PortableConsoleEncoding {
+    $script:SavedConsoleOutputEncoding = $null
+    try {
+        if ([Console]::IsOutputRedirected) {
+            $script:SavedConsoleOutputEncoding = [Console]::OutputEncoding
+            [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
+            return
+        }
+        $curCp = [Console]::OutputEncoding.CodePage
+        if ($curCp -in @(932, 936, 949, 950)) { return }
+        $candidateCps = @(
+            [Globalization.CultureInfo]::CurrentUICulture.TextInfo.ANSICodePage,
+            [Globalization.CultureInfo]::InstalledUICulture.TextInfo.ANSICodePage,
+            932
+        )
+        foreach ($cp in $candidateCps) {
+            if ($cp -in @(932, 936, 949, 950)) {
+                $enc = [Text.Encoding]::GetEncoding([int]$cp)
+                $script:SavedConsoleOutputEncoding = [Console]::OutputEncoding
+                [Console]::OutputEncoding = $enc
+                return
+            }
+        }
+    }
+    catch {}
 }
 
-function Wait-PortableProcess($Process, [string]$Activity) {
-    $watch = [Diagnostics.Stopwatch]::StartNew()
-    $nextNoticeSec = 15
-    while (-not $Process.WaitForExit(250)) {
-        if ($watch.Elapsed.TotalSeconds -ge $nextNoticeSec) {
-            Write-Host ("  [処理中] {0} ({1:N0} 秒経過...)" -f $Activity, $watch.Elapsed.TotalSeconds)
-            $nextNoticeSec += 15
+function Restore-PortableConsoleEncoding {
+    if ($null -ne $script:SavedConsoleOutputEncoding) {
+        try { [Console]::OutputEncoding = $script:SavedConsoleOutputEncoding } catch {}
+        $script:SavedConsoleOutputEncoding = $null
+    }
+}
+
+function Test-PortableProgressEnabled {
+    if ($env:PORTABLE_NONINTERACTIVE -eq '1') { return $false }
+    if ($ProgressPreference -eq 'SilentlyContinue') { return $false }
+    if ($env:PORTABLE_FORCE_PROGRESS -eq '1') { return $true }
+    try {
+        if ([Console]::IsOutputRedirected -or [Console]::IsErrorRedirected) { return $false }
+        if ($Host.Name -ne 'ConsoleHost' -or $null -eq $Host.UI -or $null -eq $Host.UI.RawUI) { return $false }
+        $null = $Host.UI.RawUI.WindowSize
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+function Format-PortableProgressText([string]$Text) {
+    if ([string]::IsNullOrEmpty($Text)) { return '' }
+    $clean = [regex]::Replace($Text, '\x1B\[[0-9;?]*[ -/]*[@-~]', '')
+    $clean = [regex]::Replace($clean, '[\x00-\x1F\x7F]+', ' ')
+    return $clean.Trim()
+}
+
+function Write-PortableProgress(
+    [int]$Id,
+    [string]$Activity,
+    [string]$Status,
+    [int]$PercentComplete = -1,
+    [int]$ParentId = -1
+) {
+    if (-not (Test-PortableProgressEnabled)) { return }
+    $safeActivity = Format-PortableProgressText $Activity
+    if ([string]::IsNullOrWhiteSpace($safeActivity)) { $safeActivity = '処理中' }
+    $safeStatus = Format-PortableProgressText $Status
+    if ([string]::IsNullOrWhiteSpace($safeStatus)) { $safeStatus = '...' }
+
+    $params = @{
+        Id              = $Id
+        Activity        = $safeActivity
+        Status          = $safeStatus
+        PercentComplete = if ($PercentComplete -lt 0) { -1 } else { [Math]::Max(0, [Math]::Min(100, $PercentComplete)) }
+    }
+    $effectiveParent = if ($ParentId -ge 0) {
+        $ParentId
+    } elseif ($script:PortableStageActive -and $Id -ne $script:PortableProgressStageId) {
+        $script:PortableProgressStageId
+    } else {
+        -1
+    }
+    if ($effectiveParent -ge 0) {
+        $params['ParentId'] = $effectiveParent
+    }
+    [void]$script:ActiveProgressIds.Add($Id)
+    if ($null -ne $script:PortableProgressHandler) {
+        & $script:PortableProgressHandler @params
+        return
+    }
+    Write-Progress @params
+}
+
+function Complete-PortableProgress([int]$Id, [string]$Activity = '完了') {
+    if ($null -ne $script:ActiveProgressIds -and -not $script:ActiveProgressIds.Remove($Id)) {
+        return
+    }
+    if (-not (Test-PortableProgressEnabled)) { return }
+    $safeActivity = Format-PortableProgressText $Activity
+    if ([string]::IsNullOrWhiteSpace($safeActivity)) { $safeActivity = '完了' }
+    if ($null -ne $script:PortableProgressHandler) {
+        & $script:PortableProgressHandler -Id $Id -Activity $safeActivity -Completed
+        return
+    }
+    Write-Progress -Id $Id -Activity $safeActivity -Completed
+}
+
+function Complete-AllPortableProgress {
+    foreach ($id in @(
+        $script:PortableProgressCheckId,
+        $script:PortableProgressExtractId,
+        $script:PortableProgressDownloadId,
+        $script:PortableProgressProcessId,
+        $script:PortableProgressStageId
+    )) {
+        if ($null -ne $id) {
+            try { Complete-PortableProgress -Id $id -Activity '完了' } catch {}
         }
+    }
+    if ($null -ne $script:ActiveProgressIds) {
+        foreach ($restId in @($script:ActiveProgressIds)) {
+            try { Complete-PortableProgress -Id $restId -Activity '完了' } catch {}
+        }
+        $script:ActiveProgressIds.Clear()
+    }
+    $script:PortableStageActive = $false
+}
+
+function Write-PortableStage([int]$Step, [string]$Message, [int]$TotalSteps = 7) {
+    $script:PortableStageActive = $true
+    $safeMessage = Format-PortableProgressText $Message
+    Write-Host "[起動中... $Step/$TotalSteps] $safeMessage"
+    $pct = [int][Math]::Min(100, [Math]::Round(($Step * 100.0) / [Math]::Max(1, $TotalSteps)))
+    Write-PortableProgress -Id $script:PortableProgressStageId -Activity $script:PortableStageActivity -Status "[$Step/$TotalSteps] $safeMessage" -PercentComplete $pct
+}
+
+function Complete-PortableStage {
+    try {
+        Complete-PortableProgress -Id $script:PortableProgressStageId -Activity $script:PortableStageActivity
+    }
+    finally {
+        $script:PortableStageActive = $false
+    }
+}
+
+function Step-PortableProcessStreams([hashtable]$State, [int]$FinalWaitMs = 0) {
+    while ($null -ne $State.OutTask) {
+        if (-not $State.OutTask.IsCompleted) {
+            if ($FinalWaitMs -le 0 -or -not $State.OutTask.Wait($FinalWaitMs)) { break }
+        }
+        $line = $State.OutTask.GetAwaiter().GetResult()
+        if ($null -eq $line) { $State.OutTask = $null; break }
+        if ($State.CaptureStdout) {
+            $State.OutLines.Add($line)
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($line)) {
+            Write-Host (Format-PortableProgressText $line)
+        }
+        $State.OutTask = $State.Process.StandardOutput.ReadLineAsync()
+    }
+    while ($null -ne $State.ErrTask) {
+        if (-not $State.ErrTask.IsCompleted) {
+            if ($FinalWaitMs -le 0 -or -not $State.ErrTask.Wait($FinalWaitMs)) { break }
+        }
+        $eline = $State.ErrTask.GetAwaiter().GetResult()
+        if ($null -eq $eline) { $State.ErrTask = $null; break }
+        if (-not [string]::IsNullOrWhiteSpace($eline)) {
+            Write-Host (Format-PortableProgressText $eline)
+        }
+        $State.ErrTask = $State.Process.StandardError.ReadLineAsync()
+    }
+}
+
+function Wait-PortableProcess($Process, [string]$Activity, [switch]$PassThruStandardOutput) {
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $hasOut = [bool]$Process.StartInfo.RedirectStandardOutput
+    $hasErr = [bool]$Process.StartInfo.RedirectStandardError
+    $streamState = @{
+        Process       = $Process
+        CaptureStdout = [bool]$PassThruStandardOutput
+        OutLines      = if ($PassThruStandardOutput) { New-Object Collections.Generic.List[string] } else { $null }
+        OutTask       = if ($hasOut) { $Process.StandardOutput.ReadLineAsync() } else { $null }
+        ErrTask       = if ($hasErr) { $Process.StandardError.ReadLineAsync() } else { $null }
+    }
+    try {
+        Write-PortableProgress -Id $script:PortableProgressProcessId -Activity $Activity -Status '起動中／処理中... 0 秒経過' -PercentComplete -1
+        while (-not $Process.WaitForExit(250)) {
+            Step-PortableProcessStreams -State $streamState -FinalWaitMs 0
+            Write-PortableProgress -Id $script:PortableProgressProcessId -Activity $Activity -Status ("起動中／処理中... {0:N0} 秒経過" -f $watch.Elapsed.TotalSeconds) -PercentComplete -1
+        }
+        Step-PortableProcessStreams -State $streamState -FinalWaitMs 2000
+    }
+    finally {
+        Complete-PortableProgress -Id $script:PortableProgressProcessId -Activity $Activity
+    }
+    if ($PassThruStandardOutput) {
+        return ($streamState.OutLines -join [Environment]::NewLine)
     }
 }
 

@@ -20,7 +20,9 @@ param(
     [string[]]$OpenPaths
 )
 
-[Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
+if ([Console]::IsOutputRedirected) {
+    [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
+}
 $ErrorActionPreference = 'Stop'
 
 # 通常版からの設定引き継ぎ（Copy-Optional.ps1）・ローカル Edge 検出用にホスト環境変数を退避
@@ -141,6 +143,7 @@ try {
         }
         . ([scriptblock]::Create([IO.File]::ReadAllText($scriptPath, [Text.Encoding]::UTF8)))
     }
+    Initialize-PortableConsoleEncoding
 
     $setupOnly = $OpenPaths -contains '--setup-only'
     $showMenu = $OpenPaths -contains '--menu'
@@ -156,6 +159,17 @@ try {
     }
 }
 catch {
+    if (Get-Command Complete-AllPortableProgress -ErrorAction SilentlyContinue) {
+        Complete-AllPortableProgress
+    }
     Write-Host "[エラー] $($_.Exception.Message)" -ForegroundColor Red
     exit 1
+}
+finally {
+    if (Get-Command Complete-AllPortableProgress -ErrorAction SilentlyContinue) {
+        Complete-AllPortableProgress
+    }
+    if (Get-Command Restore-PortableConsoleEncoding -ErrorAction SilentlyContinue) {
+        Restore-PortableConsoleEncoding
+    }
 }

@@ -20,26 +20,26 @@ function Save-UrlToFile([string]$Url, [string]$DestinationPath, [string]$Activit
             try {
                 $buffer = New-Object byte[] 65536
                 $received = 0L
-                $nextMilestone = 25
                 $sw = [Diagnostics.Stopwatch]::StartNew()
+                Write-PortableProgress -Id $script:PortableProgressDownloadId -Activity $Activity -Status '接続しました。受信を開始しています...' -PercentComplete $(if ($total -gt 0) { 0 } else { -1 })
                 while (($read = $inStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
                     $outStream.Write($buffer, 0, $read)
                     $received += $read
-                    if ($total -gt 0) {
-                        $pct = [int][Math]::Min(100, [Math]::Floor(($received * 100.0) / $total))
-                        if ($pct -ge $nextMilestone) {
-                            if ($total -ge 1MB) {
-                                $mb = [Math]::Round($received / 1MB, 1)
-                                $totalMb = [Math]::Round($total / 1MB, 1)
-                                Write-Host "  [$Activity] $mb MB / $totalMb MB ($pct%)"
-                            }
-                            while ($nextMilestone -le $pct) { $nextMilestone += 25 }
-                        }
-                    }
-                    elseif ($sw.ElapsedMilliseconds -ge 5000) {
+                    $isDone = ($total -gt 0 -and $received -ge $total)
+                    if ($sw.ElapsedMilliseconds -ge 200 -or $isDone) {
                         $sw.Restart()
-                        $mb = [Math]::Round($received / 1MB, 1)
-                        Write-Host "  [$Activity] $mb MB 受信済み..."
+                        if ($total -gt 0) {
+                            $pct = [int][Math]::Min(100, [Math]::Floor(($received * 100.0) / $total))
+                            if ($total -ge 1MB) {
+                                Write-PortableProgress -Id $script:PortableProgressDownloadId -Activity $Activity -Status ("{0:N1} MB / {1:N1} MB ({2}%)" -f ($received / 1MB), ($total / 1MB), $pct) -PercentComplete $pct
+                            }
+                            else {
+                                Write-PortableProgress -Id $script:PortableProgressDownloadId -Activity $Activity -Status ("{0:N1} KB / {1:N1} KB ({2}%)" -f ($received / 1KB), ($total / 1KB), $pct) -PercentComplete $pct
+                            }
+                        }
+                        else {
+                            Write-PortableProgress -Id $script:PortableProgressDownloadId -Activity $Activity -Status ("{0:N1} MB 受信済み" -f ($received / 1MB)) -PercentComplete -1
+                        }
                     }
                 }
                 $success = $true
@@ -49,6 +49,7 @@ function Save-UrlToFile([string]$Url, [string]$DestinationPath, [string]$Activit
         finally { $inStream.Dispose() }
     }
     finally {
+        Complete-PortableProgress -Id $script:PortableProgressDownloadId -Activity $Activity
         $resp.Close()
         if (-not $success -and (Test-Path -LiteralPath $DestinationPath -PathType Leaf)) {
             Remove-Item -LiteralPath $DestinationPath -Force -ErrorAction SilentlyContinue
@@ -56,7 +57,7 @@ function Save-UrlToFile([string]$Url, [string]$DestinationPath, [string]$Activit
     }
 }
 
-function Expand-ZipArchiveFast([string]$ZipPath, [string]$DestinationDir) {
+function Expand-ZipArchiveFast([string]$ZipPath, [string]$DestinationDir, [string]$Activity = 'アーカイブを展開中...') {
     Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
     [void][IO.Directory]::CreateDirectory($DestinationDir)
     $destFull = ([IO.Path]::GetFullPath($DestinationDir)).TrimEnd('\') + '\'
@@ -64,7 +65,8 @@ function Expand-ZipArchiveFast([string]$ZipPath, [string]$DestinationDir) {
     try {
         $total = $archive.Entries.Count
         $index = 0
-        $nextMilestone = 25
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        Write-PortableProgress -Id $script:PortableProgressExtractId -Activity $Activity -Status "0 / $total ファイル (0%)" -PercentComplete 0
         foreach ($entry in $archive.Entries) {
             $index++
             $targetPath = [IO.Path]::GetFullPath((Join-Path $DestinationDir $entry.FullName))
@@ -78,16 +80,15 @@ function Expand-ZipArchiveFast([string]$ZipPath, [string]$DestinationDir) {
                 [void][IO.Directory]::CreateDirectory((Split-Path -LiteralPath $targetPath))
                 [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $targetPath, $true)
             }
-            if ($total -ge 50) {
-                $pct = [int][Math]::Min(100, [Math]::Floor(($index * 100.0) / $total))
-                if ($pct -ge $nextMilestone) {
-                    Write-Host "  [展開中] $index / $total ファイル ($pct%)"
-                    while ($nextMilestone -le $pct) { $nextMilestone += 25 }
-                }
+            if ($sw.ElapsedMilliseconds -ge 200 -or $index -eq $total) {
+                $sw.Restart()
+                $pct = if ($total -gt 0) { [int][Math]::Min(100, [Math]::Floor(($index * 100.0) / $total)) } else { 100 }
+                Write-PortableProgress -Id $script:PortableProgressExtractId -Activity $Activity -Status "$index / $total ファイル ($pct%)" -PercentComplete $pct
             }
         }
     }
     finally {
+        Complete-PortableProgress -Id $script:PortableProgressExtractId -Activity $Activity
         $archive.Dispose()
     }
 }
@@ -187,7 +188,7 @@ function Install-VSCodeFromZip([string]$ZipPath, [string]$ExpectedSha256) {
     $stageDir = Join-Path $workDir 'stage'
     $backupDir = Join-Path $workDir 'backup'
     Write-Host '更新パッケージを展開・検証しています...'
-    try { Expand-ZipArchiveFast -ZipPath $ZipPath -DestinationDir $stageDir }
+    try { Expand-ZipArchiveFast -ZipPath $ZipPath -DestinationDir $stageDir -Activity 'VSCode アーカイブを展開中...' }
     catch {
         Remove-Item -LiteralPath $workDir -Recurse -Force -ErrorAction SilentlyContinue
         throw

@@ -17,6 +17,10 @@ function Invoke-PortableCodeCli([string[]]$CliArgs) {
     $info.FileName = $code
     $info.WorkingDirectory = $root
     $info.UseShellExecute = $false
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $info.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $info.StandardErrorEncoding = [Text.Encoding]::UTF8
     $info.Arguments = (@($fullArgs | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' ')
     Set-PortableChildEnvironment -Info $info -ExtraEnvironment @{ ELECTRON_RUN_AS_NODE = '1' }
     $proc = [Diagnostics.Process]::Start($info)

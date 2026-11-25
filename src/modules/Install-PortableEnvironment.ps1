@@ -89,15 +89,17 @@ function Invoke-PortableNode([string[]]$NodeArgs, [hashtable]$Environment = @{},
     $info.FileName = $code
     $info.WorkingDirectory = $WorkingDirectory
     $info.UseShellExecute = $false
-    $info.RedirectStandardOutput = $CaptureOutput.IsPresent
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $info.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $info.StandardErrorEncoding = [Text.Encoding]::UTF8
     $info.Arguments = (@($NodeArgs | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' ')
     $nodeEnv = @{ ELECTRON_RUN_AS_NODE = '1' }
     foreach ($key in $Environment.Keys) { $nodeEnv[$key] = $Environment[$key] }
     Set-PortableChildEnvironment -Info $info -ExtraEnvironment $nodeEnv
     $process = [Diagnostics.Process]::Start($info)
     try {
-        $output = if ($CaptureOutput) { $process.StandardOutput.ReadToEnd() }
-        Wait-PortableProcess $process 'ポータブル Node / MCP を処理しています'
+        $output = Wait-PortableProcess -Process $process -Activity 'ポータブル Node / MCP を処理しています' -PassThruStandardOutput:$CaptureOutput
         if ($process.ExitCode -ne 0) { throw "Portable Node command failed (exit $($process.ExitCode)): $($NodeArgs -join ' ')" }
         if ($CaptureOutput) { return $output }
     }
@@ -111,15 +113,18 @@ function Ensure-PortableBootstrapNpm {
         Initialize-NetworkConfig
         $npm = Invoke-RestMethod -Uri 'https://registry.npmjs.org/npm/10.9.2' -Headers @{ 'User-Agent' = 'VSCode-Portable-Launcher/1.0' } -TimeoutSec 30
         $archive = Join-Path $data 'tmp\npm-10.9.2.tgz'
-        Save-UrlToFile $npm.dist.tarball $archive 'Downloading bootstrap npm'
+        Save-UrlToFile $npm.dist.tarball $archive '導入用 npm をダウンロードしています'
         $hash = [Security.Cryptography.SHA512]::Create()
         $stream = [IO.File]::OpenRead($archive)
         try { $integrity = 'sha512-' + [Convert]::ToBase64String($hash.ComputeHash($stream)) }
         finally { $stream.Dispose(); $hash.Dispose() }
         if ($integrity -cne $npm.dist.integrity) { throw 'npm package integrity check failed.' }
         [void][IO.Directory]::CreateDirectory($npmRoot)
-        & tar.exe -xzf $archive -C $npmRoot
-        if ($LASTEXITCODE -ne 0) { throw 'npm package extraction failed.' }
+        $tarOut = & tar.exe -xzf $archive -C $npmRoot 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $tarMsg = ($tarOut | ForEach-Object { [string]$_ }) -join ' '
+            throw "npm package extraction failed: $tarMsg"
+        }
     }
     return $npmCli
 }
@@ -278,44 +283,50 @@ function Update-McpOnline([object]$PrefetchedRelease) {
 }
 
 function Install-PortableEnvironment {
-    Write-PortableStage 1 'フォルダと初期設定を確認しています'
-    Initialize-Portable
-    Write-PortableStage 2 'VS Code 本体を確認しています'
-    if (-not (Test-Path -LiteralPath $code -PathType Leaf)) {
-        Write-Host '[Setup] Installing VS Code ZIP edition...'
-        $current = Get-VSCodeMetadata $root
-        $release = Get-LatestVSCodeRelease $current
-        $zip = Save-VSCodeReleasePackage $current $release
-        if (-not (Install-VSCodeFromZip $zip $release.Sha256)) { throw 'VS Code installation was cancelled.' }
-    }
-    Write-PortableStage 3 '日本語パックと Cline を確認しています'
-    foreach ($id in @('MS-CEINTL.vscode-language-pack-ja', $clineExtensionId)) {
-        if (-not (Get-InstalledExtensionVersion $id)) {
-            Write-Host "[Setup] Installing $id ..."
-            Invoke-PortableCodeCli @('--install-extension', $id)
-            if (-not (Get-InstalledExtensionVersion $id)) { throw "Extension verification failed: $id" }
+    $script:PortableStageActive = $true
+    try {
+        Write-PortableStage 1 'フォルダと初期設定を確認しています'
+        Initialize-Portable
+        Write-PortableStage 2 'VS Code 本体を確認しています'
+        if (-not (Test-Path -LiteralPath $code -PathType Leaf)) {
+            Write-Host '[Setup] Installing VS Code ZIP edition...'
+            $current = Get-VSCodeMetadata $root
+            $release = Get-LatestVSCodeRelease $current
+            $zip = Save-VSCodeReleasePackage $current $release
+            if (-not (Install-VSCodeFromZip $zip $release.Sha256)) { throw 'VS Code installation was cancelled.' }
         }
-    }
-    Set-PortableJapanese
-    $argvPath = Join-Path $data 'argv.json'
-    # VS Code writes JSON with comments here. Preserve existing user choices.
-    if (-not (Test-Path -LiteralPath $argvPath)) {
-        Write-PortableJson $argvPath ([ordered]@{ locale = 'ja'; 'enable-crash-reporter' = $false; 'crash-reporter-id' = [guid]::NewGuid().ToString() })
-    }
+        Write-PortableStage 3 '日本語パックと Cline を確認しています'
+        foreach ($id in @('MS-CEINTL.vscode-language-pack-ja', $clineExtensionId)) {
+            if (-not (Get-InstalledExtensionVersion $id)) {
+                Write-Host "[Setup] Installing $id ..."
+                Invoke-PortableCodeCli @('--install-extension', $id)
+                if (-not (Get-InstalledExtensionVersion $id)) { throw "Extension verification failed: $id" }
+            }
+        }
+        Set-PortableJapanese
+        $argvPath = Join-Path $data 'argv.json'
+        # VS Code writes JSON with comments here. Preserve existing user choices.
+        if (-not (Test-Path -LiteralPath $argvPath)) {
+            Write-PortableJson $argvPath ([ordered]@{ locale = 'ja'; 'enable-crash-reporter' = $false; 'crash-reporter-id' = [guid]::NewGuid().ToString() })
+        }
 
-    Write-PortableStage 4 'ポータブル Git を確認しています'
-    Install-PortableGit
-    Write-PortableStage 5 'Playwright MCP を確認しています'
-    $mcpRoot = Join-Path $cline 'mcp\playwright'
-    [void](Install-PortablePlaywrightMcp)
-    Write-PortableStage 6 'ローカル Microsoft Edge を確認しています'
-    $edgeExe = Get-LocalEdgeExecutablePath
-    if (-not $edgeExe) {
-        throw 'ローカル PC に Microsoft Edge (msedge.exe) が見つかりません。Microsoft Edge をインストールしてから再実行してください。'
+        Write-PortableStage 4 'ポータブル Git を確認しています'
+        Install-PortableGit
+        Write-PortableStage 5 'Playwright MCP を確認しています'
+        $mcpRoot = Join-Path $cline 'mcp\playwright'
+        [void](Install-PortablePlaywrightMcp)
+        Write-PortableStage 6 'ローカル Microsoft Edge を確認しています'
+        $edgeExe = Get-LocalEdgeExecutablePath
+        if (-not $edgeExe) {
+            throw 'ローカル PC に Microsoft Edge (msedge.exe) が見つかりません。Microsoft Edge をインストールしてから再実行してください。'
+        }
+        Remove-LegacyPortableBrowsers -BrowserPath (Join-Path $mcpRoot 'browsers')
+        Initialize-Portable
+        Write-PortableStage 7 'ブラウザーと MCP の動作を確認しています'
+        Invoke-PortableNode @((Join-Path $mcpRoot 'verify-mcp.js'))
     }
-    Remove-LegacyPortableBrowsers -BrowserPath (Join-Path $mcpRoot 'browsers')
-    Initialize-Portable
-    Write-PortableStage 7 'ブラウザーと MCP の動作を確認しています'
-    Invoke-PortableNode @((Join-Path $mcpRoot 'verify-mcp.js'))
+    finally {
+        Complete-PortableStage
+    }
     Write-Host "[Ready] Portable VS Code / Japanese / Git / Cline / Playwright MCP: $root" -ForegroundColor Green
 }

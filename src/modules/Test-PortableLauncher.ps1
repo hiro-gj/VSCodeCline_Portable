@@ -288,6 +288,62 @@ try {
     }
     Assert ($vsTermSettings.TMPDIR -eq (Join-Path $data 'tmp')) 'Terminal TMPDIR not isolated'
     Write-Host '[PASS] Windows KnownFolder (PathService key 112) profile layout and cross-drive terminal isolation'
+
+    # 8. Verify Write-Progress integration, ParentId hierarchy, sanitizing, exception cleanup, and UTF-8 stream relay
+    $global:progressEvents = New-Object Collections.Generic.List[object]
+    $script:PortableProgressHandler = {
+        param(
+            [int]$Id = 0,
+            [int]$ParentId = -1,
+            [string]$Activity = '',
+            [string]$Status = '',
+            [int]$PercentComplete = -1,
+            [switch]$Completed
+        )
+        $global:progressEvents.Add([pscustomobject]@{
+            Id              = $Id
+            ParentId        = $ParentId
+            Activity        = $Activity
+            Status          = $Status
+            PercentComplete = $PercentComplete
+            Completed       = [bool]$Completed
+        })
+    }
+    $env:PORTABLE_FORCE_PROGRESS = '1'
+    try {
+        $cleanText = Format-PortableProgressText ("`r`n" + [char]0x1B + "[31mInjected" + [char]0x1B + "[0m`tLine")
+        Assert ($cleanText -ceq 'Injected Line') 'Format-PortableProgressText failed to strip ANSI/control chars'
+
+        Write-PortableStage 1 'Stage test'
+        $procPsi = New-Object Diagnostics.ProcessStartInfo
+        $procPsi.FileName = Join-Path $PSHOME 'powershell.exe'
+        $procPsi.Arguments = '-NoLogo -NoProfile -NonInteractive -Command "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Write-Output ''Stream relay test OK''"'
+        $procPsi.UseShellExecute = $false
+        $procPsi.RedirectStandardOutput = $true
+        $procPsi.RedirectStandardError = $true
+        $procPsi.StandardOutputEncoding = [Text.Encoding]::UTF8
+        $procPsi.StandardErrorEncoding = [Text.Encoding]::UTF8
+        $testProc = [Diagnostics.Process]::Start($procPsi)
+        try {
+            $capturedOut = Wait-PortableProcess -Process $testProc -Activity 'Process test' -PassThruStandardOutput
+            Assert ($capturedOut.Trim() -ceq 'Stream relay test OK') "Async stream capture mismatch: $capturedOut"
+        }
+        finally {
+            $testProc.Dispose()
+            Complete-PortableStage
+        }
+
+        Assert (@($global:progressEvents | Where-Object { $_.Id -eq 10 -and -not $_.Completed }).Count -ge 1) 'Stage Write-Progress (Id=10) not emitted'
+        Assert (@($global:progressEvents | Where-Object { $_.Id -eq 11 -and $_.ParentId -eq 10 -and -not $_.Completed }).Count -ge 1) 'Child process Write-Progress (Id=11, ParentId=10) not emitted'
+        Assert (@($global:progressEvents | Where-Object { $_.Id -eq 11 -and $_.Completed }).Count -ge 1) 'Child process Write-Progress (Id=11) not completed'
+        Assert (@($global:progressEvents | Where-Object { $_.Id -eq 10 -and $_.Completed }).Count -ge 1) 'Stage Write-Progress (Id=10) not completed'
+        Assert ($script:ActiveProgressIds.Count -eq 0) 'ActiveProgressIds must be empty after completion'
+        Write-Host '[PASS] Write-Progress lifecycle, hierarchy, ANSI sanitization, and stream relay'
+    }
+    finally {
+        $env:PORTABLE_FORCE_PROGRESS = $null
+        $script:PortableProgressHandler = $null; $global:progressEvents = $null
+    }
 }
 finally {
     # The target is the unique sandbox created above, never an application folder.

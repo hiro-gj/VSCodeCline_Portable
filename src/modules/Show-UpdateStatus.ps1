@@ -125,14 +125,28 @@ function Show-UpdateStatus {
     $gitCur   = Get-InstalledPortableGitInfo
     Write-Host 'オンラインで最新バージョンを確認しています (VSCode / Cline / Playwright MCP / Git)...'
 
-    $vsRel = $null;    $vsErr = $null
-    try { $vsRel = Get-LatestVSCodeRelease $vsCur } catch { $vsErr = $_.Exception.Message }
+    $checkAct = 'オンラインで最新バージョンを確認しています'
+    $vsRel = $null;       $vsErr = $null
     $clineLatest = $null; $clineErr = $null
-    try { $clineLatest = Get-LatestMarketplaceVersion $clineExtensionId } catch { $clineErr = $_.Exception.Message }
-    $mcpRel = $null;   $mcpErr = $null
-    try { $mcpRel = Get-LatestPlaywrightMcpRelease } catch { $mcpErr = $_.Exception.Message }
-    $gitRel = $null;   $gitErr = $null
-    try { $gitRel = Get-LatestPortableGitRelease } catch { $gitErr = $_.Exception.Message }
+    $mcpRel = $null;      $mcpErr = $null
+    $gitRel = $null;      $gitErr = $null
+    try {
+        Write-PortableProgress -Id $script:PortableProgressCheckId -Activity $checkAct -Status '[1/4] VSCode 本体を確認中...' -PercentComplete 0
+        try { $vsRel = Get-LatestVSCodeRelease $vsCur } catch { $vsErr = $_.Exception.Message }
+
+        Write-PortableProgress -Id $script:PortableProgressCheckId -Activity $checkAct -Status '[2/4] Cline 拡張を確認中...' -PercentComplete 25
+        try { $clineLatest = Get-LatestMarketplaceVersion $clineExtensionId } catch { $clineErr = $_.Exception.Message }
+
+        Write-PortableProgress -Id $script:PortableProgressCheckId -Activity $checkAct -Status '[3/4] Playwright MCP を確認中...' -PercentComplete 50
+        try { $mcpRel = Get-LatestPlaywrightMcpRelease } catch { $mcpErr = $_.Exception.Message }
+
+        Write-PortableProgress -Id $script:PortableProgressCheckId -Activity $checkAct -Status '[4/4] ポータブル Git を確認中...' -PercentComplete 75
+        try { $gitRel = Get-LatestPortableGitRelease } catch { $gitErr = $_.Exception.Message }
+        Write-PortableProgress -Id $script:PortableProgressCheckId -Activity $checkAct -Status '[4/4] 確認完了' -PercentComplete 100
+    }
+    finally {
+        Complete-PortableProgress -Id $script:PortableProgressCheckId -Activity $checkAct
+    }
 
     $vsCurLabel = if ($vsCur.Version) { $vsCur.Version } else { '未検出' }
     $vsHasUpdate = $false

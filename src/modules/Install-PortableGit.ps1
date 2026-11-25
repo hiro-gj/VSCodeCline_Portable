@@ -35,7 +35,7 @@ function Install-PortableGit([object]$TargetRelease = $null, [string]$LocalZipPa
         }
         $stage = Join-Path $data ('tmp\git-' + [guid]::NewGuid().ToString('N'))
         try {
-            Expand-ZipArchiveFast $archive $stage
+            Expand-ZipArchiveFast $archive $stage 'ポータブル Git (MinGit) を展開中...'
             $stagedExe = Join-Path $stage 'cmd\git.exe'
             if (-not (Test-Path -LiteralPath $stagedExe -PathType Leaf)) { throw "MinGit の展開内容が不正です: $stage" }
             $version = & $stagedExe --version

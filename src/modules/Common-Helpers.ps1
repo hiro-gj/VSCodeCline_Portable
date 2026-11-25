@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # Common-Helpers.ps1
 # 共通 UI 対話・ネイティブ引数エスケープ関数群
 # ============================================================
@@ -13,22 +13,43 @@ function Wait-Menu {
 
 function Write-PortableStage([int]$Step, [string]$Message) {
     Write-Host "[起動中... $Step/7] $Message"
-    Write-Progress -Id 10 -Activity 'ポータブル環境を準備しています（処理段階の目安）' -Status $Message -PercentComplete ([int](100 * $Step / 7))
 }
 
 function Wait-PortableProcess($Process, [string]$Activity) {
     $watch = [Diagnostics.Stopwatch]::StartNew()
-    try {
-        while (-not $Process.WaitForExit(250)) {
-            Write-Progress -Id 11 -Activity $Activity -Status ("起動中／処理中... {0:N0} 秒経過" -f $watch.Elapsed.TotalSeconds) -PercentComplete -1
+    $nextNoticeSec = 15
+    while (-not $Process.WaitForExit(250)) {
+        if ($watch.Elapsed.TotalSeconds -ge $nextNoticeSec) {
+            Write-Host ("  [処理中] {0} ({1:N0} 秒経過...)" -f $Activity, $watch.Elapsed.TotalSeconds)
+            $nextNoticeSec += 15
         }
     }
-    finally { Write-Progress -Id 11 -Activity $Activity -Completed }
 }
 
 function ConvertTo-NativeArgument([string]$Value) {
     # Windows argument quoting: preserve spaces, quotes and trailing backslashes.
     return '"' + ([regex]::Replace(([regex]::Replace($Value, '(\\*)"', '$1$1\"')), '(\\+)$', '$1$1')) + '"'
+}
+
+function ConvertTo-ExtendedPath([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
+    if ($Path.StartsWith('\\?\', [StringComparison]::Ordinal)) { return $Path }
+    $full = [IO.Path]::GetFullPath($Path)
+    if ($full -match '^[A-Za-z]:\\') { return '\\?\' + $full }
+    if ($full.StartsWith('\\', [StringComparison]::Ordinal)) { return '\\?\UNC\' + $full.Substring(2) }
+    return $full
+}
+
+function Get-PortableFileSha256([string]$Path) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead((ConvertTo-ExtendedPath $Path))
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $stream.Dispose()
+        $sha.Dispose()
+    }
 }
 
 function Test-PortableHardLinkSupport([string]$DirectoryPath) {
@@ -70,31 +91,57 @@ function Get-PortableIsolationPaths {
     $toolsBin     = Join-Path $data 'tools\bin'
     $gitRoot      = Join-Path $data 'tools\git'
     return [pscustomobject]@{
-        Home             = $portableHome
-        SshDir           = Join-Path $portableHome '.ssh'
-        GitGlobalConfig  = Join-Path $portableHome '.gitconfig'
-        NpmUserConfig    = Join-Path $portableHome '.npmrc'
-        XdgConfigHome    = Join-Path $portableHome '.config'
-        XdgDataHome      = Join-Path $portableHome '.local\share'
-        XdgStateHome     = Join-Path $portableHome '.local\state'
-        XdgCacheHome     = Join-Path $portableHome '.cache'
-        GhConfigDir      = Join-Path $portableHome '.config\gh'
-        DocumentsDir     = Join-Path $portableHome 'Documents'
-        AppDataRoaming   = Join-Path $appDataRoot 'Roaming'
-        AppDataLocal     = Join-Path $appDataRoot 'Local'
-        AppDataLocalLow  = Join-Path $appDataRoot 'LocalLow'
-        TmpDir           = Join-Path $data 'tmp'
-        NpmCacheDir      = Join-Path $data 'tmp\npm-cache'
-        ClineDir         = $clineRoot
-        ClineDataDir     = Join-Path $clineRoot 'data'
-        ClineRulesDir    = Join-Path $clineRoot 'rules'
-        GitStateRoot     = $gitStateRoot
-        GitSystemConfig  = Join-Path $gitStateRoot 'system.gitconfig'
-        GcmDpapiStore    = Join-Path $gitStateRoot 'gcm-dpapi'
-        GitRoot          = $gitRoot
-        GitCmdDir        = Join-Path $gitRoot 'cmd'
-        GitSshExe        = Join-Path $gitRoot 'usr\bin\ssh.exe'
-        ToolsBinDir      = $toolsBin
+        Home                = $portableHome
+        HomeAppDataRoaming  = Join-Path $portableHome 'AppData\Roaming'
+        HomeAppDataLocal    = Join-Path $portableHome 'AppData\Local'
+        HomeAppDataLocalLow = Join-Path $portableHome 'AppData\LocalLow'
+        SshDir              = Join-Path $portableHome '.ssh'
+        GitGlobalConfig     = Join-Path $portableHome '.gitconfig'
+        NpmUserConfig       = Join-Path $portableHome '.npmrc'
+        XdgConfigHome       = Join-Path $portableHome '.config'
+        XdgDataHome         = Join-Path $portableHome '.local\share'
+        XdgStateHome        = Join-Path $portableHome '.local\state'
+        XdgCacheHome        = Join-Path $portableHome '.cache'
+        GhConfigDir         = Join-Path $portableHome '.config\gh'
+        DocumentsDir        = Join-Path $portableHome 'Documents'
+        DownloadsDir        = Join-Path $portableHome 'Downloads'
+        DesktopDir          = Join-Path $portableHome 'Desktop'
+        AppDataRoaming      = Join-Path $appDataRoot 'Roaming'
+        AppDataLocal        = Join-Path $appDataRoot 'Local'
+        AppDataLocalLow     = Join-Path $appDataRoot 'LocalLow'
+        TmpDir              = Join-Path $data 'tmp'
+        NpmCacheDir         = Join-Path $data 'tmp\npm-cache'
+        ClineDir            = $clineRoot
+        ClineDataDir        = Join-Path $clineRoot 'data'
+        ClineRulesDir       = Join-Path $clineRoot 'rules'
+        GitStateRoot        = $gitStateRoot
+        GitSystemConfig     = Join-Path $gitStateRoot 'system.gitconfig'
+        GcmDpapiStore       = Join-Path $gitStateRoot 'gcm-dpapi'
+        GitRoot             = $gitRoot
+        GitCmdDir           = Join-Path $gitRoot 'cmd'
+        GitSshExe           = Join-Path $gitRoot 'usr\bin\ssh.exe'
+        ToolsBinDir         = $toolsBin
+    }
+}
+
+function Ensure-PortableProfileDirectories($Paths = $null) {
+    $p = if ($Paths) { $Paths } else { Get-PortableIsolationPaths }
+    foreach ($dir in @(
+        $p.Home
+        $p.HomeAppDataRoaming
+        $p.HomeAppDataLocal
+        $p.HomeAppDataLocalLow
+        $p.DocumentsDir
+        $p.DownloadsDir
+        $p.DesktopDir
+        $p.AppDataRoaming
+        $p.AppDataLocal
+        $p.AppDataLocalLow
+        $p.TmpDir
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($dir)) {
+            [void][IO.Directory]::CreateDirectory($dir)
+        }
     }
 }
 
@@ -201,6 +248,7 @@ function Set-PortableChildEnvironment(
     [switch]$IncludeGitPath
 ) {
     $paths = Get-PortableIsolationPaths
+    Ensure-PortableProfileDirectories $paths
 
     # 1. ホスト環境からの汚染・外部参照を招く環境変数を除去
     foreach ($key in @($Info.EnvironmentVariables.Keys)) {
@@ -268,8 +316,9 @@ function Set-PortableChildEnvironment(
     }
 
     # 5. npm 設定・キャッシュの閉じ込め
-    $Info.EnvironmentVariables['npm_config_cache']      = $paths.NpmCacheDir
-    $Info.EnvironmentVariables['npm_config_userconfig'] = $paths.NpmUserConfig
+    $Info.EnvironmentVariables['npm_config_cache']           = $paths.NpmCacheDir
+    $Info.EnvironmentVariables['npm_config_userconfig']      = $paths.NpmUserConfig
+    $Info.EnvironmentVariables['npm_config_update_notifier'] = 'false'
     $Info.EnvironmentVariables['PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD'] = '1'
     $Info.EnvironmentVariables['PORTABLE_ENV_INITIALIZED'] = '1'
 

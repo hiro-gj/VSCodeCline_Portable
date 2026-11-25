@@ -1,4 +1,4 @@
-﻿# Prepare the native language-pack cache BEFORE Electron resolves its UI locale.
+# Prepare the native language-pack cache BEFORE Electron resolves its UI locale.
 function Set-PortableJapanese {
     $extensionRoot = Join-Path $data 'extensions'
     $version = Get-InstalledExtensionVersion 'MS-CEINTL.vscode-language-pack-ja'

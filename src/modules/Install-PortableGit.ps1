@@ -1,4 +1,4 @@
-﻿# MinGit is Git for Windows without the GUI; no installer or administrator needed.
+# MinGit is Git for Windows without the GUI; no installer or administrator needed.
 function Install-PortableGit([object]$TargetRelease = $null, [string]$LocalZipPath = '', [switch]$Force) {
     $gitRoot = Join-Path $data 'tools\git'
     $gitExe = Join-Path $gitRoot 'cmd\git.exe'

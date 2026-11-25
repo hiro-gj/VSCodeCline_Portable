@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # Initialize-Portable.ps1
 # メインメニュー [3] ポータブル用フォルダ・初期設定の作成／修復
 # メインメニュー [4] ポータブルデータフォルダ (data) を開く
@@ -85,7 +85,8 @@ function Repair-ClineMcpExfat([switch]$Force) {
         $bundle = Join-Path $extension.FullName 'dist\extension.js'
         if (-not (Test-Path -LiteralPath $bundle -PathType Leaf)) { continue }
 
-        $source = [IO.File]::ReadAllText($bundle, [Text.Encoding]::UTF8)
+        $extBundle = ConvertTo-ExtendedPath $bundle
+        $source = [IO.File]::ReadAllText($extBundle, [Text.Encoding]::UTF8)
         $targetPlan = Find-ClineMcpHardLinkPatchTarget $source
         if ($targetPlan.Status -eq 'AlreadyPatched' -or $targetPlan.Status -eq 'NotNeeded') {
             continue
@@ -95,14 +96,16 @@ function Repair-ClineMcpExfat([switch]$Force) {
             continue
         }
 
-        $hash = (Get-FileHash -LiteralPath $bundle -Algorithm SHA256).Hash.ToLowerInvariant()
+        $hash = Get-PortableFileSha256 $bundle
         $backupDir = Join-Path $cline ("compatibility\backups\saoudrizwan.claude-dev-$ver")
-        [void][IO.Directory]::CreateDirectory($backupDir)
+        $extBackupDir = ConvertTo-ExtendedPath $backupDir
+        [void][IO.Directory]::CreateDirectory($extBackupDir)
         $backup = Join-Path $backupDir ("extension.$hash.js")
-        if (-not (Test-Path -LiteralPath $backup -PathType Leaf)) {
-            [IO.File]::Copy($bundle, $backup, $false)
+        $extBackup = ConvertTo-ExtendedPath $backup
+        if (-not [IO.File]::Exists($extBackup)) {
+            [IO.File]::Copy($extBundle, $extBackup, $false)
         }
-        if ((Get-FileHash -LiteralPath $backup -Algorithm SHA256).Hash -ine $hash) {
+        if ((Get-PortableFileSha256 $backup) -ine $hash) {
             throw "Cline exFAT fix: backup verification failed: $backup"
         }
 
@@ -112,13 +115,13 @@ function Repair-ClineMcpExfat([switch]$Force) {
             throw "Cline exFAT fix: post-patch structure verification failed for Cline $ver."
         }
         try {
-            [IO.File]::WriteAllText($bundle, $patched, (New-Object Text.UTF8Encoding($false)))
-            if ([IO.File]::ReadAllText($bundle, [Text.Encoding]::UTF8) -cne $patched) {
+            [IO.File]::WriteAllText($extBundle, $patched, (New-Object Text.UTF8Encoding($false)))
+            if ([IO.File]::ReadAllText($extBundle, [Text.Encoding]::UTF8) -cne $patched) {
                 throw 'Cline exFAT fix: verification of the patched extension failed.'
             }
         }
         catch {
-            [IO.File]::Copy($backup, $bundle, $true)
+            [IO.File]::Copy($extBackup, $extBundle, $true)
             throw
         }
         $patchedAny = $true
@@ -188,6 +191,14 @@ function Update-PortableVSCodeTerminalSettings {
     if (-not $termEnv) { $termEnv = [pscustomobject]@{} }
     Set-PortableProperty $termEnv 'USERPROFILE'          $paths.Home
     Set-PortableProperty $termEnv 'HOME'                 $paths.Home
+    if ($paths.Home -match '^([A-Za-z]:)(\\.*)$') {
+        Set-PortableProperty $termEnv 'HOMEDRIVE'        $Matches[1]
+        Set-PortableProperty $termEnv 'HOMEPATH'         $Matches[2]
+    }
+    else {
+        Set-PortableProperty $termEnv 'HOMEDRIVE'        $null
+        Set-PortableProperty $termEnv 'HOMEPATH'         $null
+    }
     Set-PortableProperty $termEnv 'APPDATA'              $paths.AppDataRoaming
     Set-PortableProperty $termEnv 'LOCALAPPDATA'         $paths.AppDataLocal
     Set-PortableProperty $termEnv 'XDG_CONFIG_HOME'      $paths.XdgConfigHome
@@ -196,6 +207,7 @@ function Update-PortableVSCodeTerminalSettings {
     Set-PortableProperty $termEnv 'XDG_CACHE_HOME'       $paths.XdgCacheHome
     Set-PortableProperty $termEnv 'TEMP'                 $paths.TmpDir
     Set-PortableProperty $termEnv 'TMP'                  $paths.TmpDir
+    Set-PortableProperty $termEnv 'TMPDIR'               $paths.TmpDir
     Set-PortableProperty $termEnv 'CLINE_DIR'            $paths.ClineDir
     Set-PortableProperty $termEnv 'CLINE_DATA_DIR'       $paths.ClineDataDir
     Set-PortableProperty $termEnv 'GIT_CONFIG_GLOBAL'    $paths.GitGlobalConfig
@@ -221,10 +233,10 @@ function Initialize-Portable {
     $paths = Get-PortableIsolationPaths
     [void][IO.Directory]::CreateDirectory($paths.Home)
     Move-LegacyPortableClineDirectory
+    Ensure-PortableProfileDirectories $paths
     foreach ($dir in @(
         (Join-Path $data 'user-data\User')
         (Join-Path $data 'extensions')
-        $paths.TmpDir
         $paths.NpmCacheDir
         $cline
         (Join-Path $cline 'data\settings')
@@ -235,10 +247,6 @@ function Initialize-Portable {
         $paths.XdgStateHome
         $paths.XdgCacheHome
         $paths.GhConfigDir
-        $paths.DocumentsDir
-        $paths.AppDataRoaming
-        $paths.AppDataLocal
-        $paths.AppDataLocalLow
         $paths.GitStateRoot
     )) {
         [void][IO.Directory]::CreateDirectory($dir)

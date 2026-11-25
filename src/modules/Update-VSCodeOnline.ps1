@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # Update-VSCodeOnline.ps1
 # アップデート管理 [3] VSCode 本体のダウンロード・ZIP展開・入れ替え・ロールバック
 # ============================================================
@@ -20,21 +20,26 @@ function Save-UrlToFile([string]$Url, [string]$DestinationPath, [string]$Activit
             try {
                 $buffer = New-Object byte[] 65536
                 $received = 0L
+                $nextMilestone = 25
                 $sw = [Diagnostics.Stopwatch]::StartNew()
                 while (($read = $inStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
                     $outStream.Write($buffer, 0, $read)
                     $received += $read
-                    if ($sw.ElapsedMilliseconds -ge 200) {
+                    if ($total -gt 0) {
+                        $pct = [int][Math]::Min(100, [Math]::Floor(($received * 100.0) / $total))
+                        if ($pct -ge $nextMilestone) {
+                            if ($total -ge 1MB) {
+                                $mb = [Math]::Round($received / 1MB, 1)
+                                $totalMb = [Math]::Round($total / 1MB, 1)
+                                Write-Host "  [$Activity] $mb MB / $totalMb MB ($pct%)"
+                            }
+                            while ($nextMilestone -le $pct) { $nextMilestone += 25 }
+                        }
+                    }
+                    elseif ($sw.ElapsedMilliseconds -ge 5000) {
                         $sw.Restart()
                         $mb = [Math]::Round($received / 1MB, 1)
-                        if ($total -gt 0) {
-                            $totalMb = [Math]::Round($total / 1MB, 1)
-                            $pct = [int][Math]::Min(100, [Math]::Floor(($received * 100.0) / $total))
-                            Write-Progress -Activity $Activity -Status "$mb MB / $totalMb MB ($pct%)" -PercentComplete $pct
-                        }
-                        else {
-                            Write-Progress -Activity $Activity -Status "$mb MB 受信済み"
-                        }
+                        Write-Host "  [$Activity] $mb MB 受信済み..."
                     }
                 }
                 $success = $true
@@ -44,7 +49,6 @@ function Save-UrlToFile([string]$Url, [string]$DestinationPath, [string]$Activit
         finally { $inStream.Dispose() }
     }
     finally {
-        Write-Progress -Activity $Activity -Completed
         $resp.Close()
         if (-not $success -and (Test-Path -LiteralPath $DestinationPath -PathType Leaf)) {
             Remove-Item -LiteralPath $DestinationPath -Force -ErrorAction SilentlyContinue
@@ -60,6 +64,7 @@ function Expand-ZipArchiveFast([string]$ZipPath, [string]$DestinationDir) {
     try {
         $total = $archive.Entries.Count
         $index = 0
+        $nextMilestone = 25
         foreach ($entry in $archive.Entries) {
             $index++
             $targetPath = [IO.Path]::GetFullPath((Join-Path $DestinationDir $entry.FullName))
@@ -73,14 +78,16 @@ function Expand-ZipArchiveFast([string]$ZipPath, [string]$DestinationDir) {
                 [void][IO.Directory]::CreateDirectory((Split-Path -LiteralPath $targetPath))
                 [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $targetPath, $true)
             }
-            if (($index % 200) -eq 0 -or $index -eq $total) {
-                $pct = if ($total -gt 0) { [int][Math]::Min(100, [Math]::Floor(($index * 100.0) / $total)) } else { 100 }
-                Write-Progress -Activity 'VSCode アーカイブを展開中...' -Status "$index / $total ファイル ($pct%)" -PercentComplete $pct
+            if ($total -ge 50) {
+                $pct = [int][Math]::Min(100, [Math]::Floor(($index * 100.0) / $total))
+                if ($pct -ge $nextMilestone) {
+                    Write-Host "  [展開中] $index / $total ファイル ($pct%)"
+                    while ($nextMilestone -le $pct) { $nextMilestone += 25 }
+                }
             }
         }
     }
     finally {
-        Write-Progress -Activity 'VSCode アーカイブを展開中...' -Completed
         $archive.Dispose()
     }
 }

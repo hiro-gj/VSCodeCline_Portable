@@ -1,10 +1,10 @@
-﻿# Run with Windows PowerShell 5.1; no external test framework required.
+# Run with Windows PowerShell 5.1; no external test framework required.
 $ErrorActionPreference = 'Stop'
 $modulesRoot = $PSScriptRoot
 $sourceRoot  = Split-Path -LiteralPath $modulesRoot
 $repoParent  = Split-Path -LiteralPath $sourceRoot
 foreach ($name in @('Common-Helpers.ps1', 'Initialize-Portable.ps1', 'Install-PortableEnvironment.ps1', 'Set-PortableJapanese.ps1', 'Install-PortableGit.ps1')) {
-    . (Join-Path $modulesRoot $name)
+    . ([scriptblock]::Create([IO.File]::ReadAllText((Join-Path $modulesRoot $name), [Text.Encoding]::UTF8)))
 }
 function Assert($Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
 
@@ -19,13 +19,21 @@ $code = Join-Path $root 'Code.exe'
 $cline = Join-Path $data 'home\.cline'
 
 try {
-    # 1. Verify src and src\modules structure
+    # 1. Verify src and src\modules structure and UTF-8 (no BOM) + CRLF encoding consistency
     $looseFiles = @(Get-ChildItem -LiteralPath $sourceRoot -File | Where-Object { $_.Name -ine 'Start-VSCodeCline_Portable.cmd' })
     Assert ($looseFiles.Count -eq 0) 'src root must contain only Start-VSCodeCline_Portable.cmd'
     Assert (Test-Path -LiteralPath (Join-Path $modulesRoot 'start-mcp.js') -PathType Leaf) 'start-mcp.js missing in src\modules'
     Assert (Test-Path -LiteralPath (Join-Path $modulesRoot 'verify-mcp.js') -PathType Leaf) 'verify-mcp.js missing in src\modules'
     Assert (Test-Path -LiteralPath (Join-Path $modulesRoot 'playwright-mcp-snapshot.md') -PathType Leaf) 'Rule template missing in src\modules'
-    Write-Host '[PASS] Directory structure: src\modules separation'
+    foreach ($srcFile in (Get-ChildItem -LiteralPath $sourceRoot -Recurse -File)) {
+        $rawBytes = [IO.File]::ReadAllBytes($srcFile.FullName)
+        $hasUtf8Bom = ($rawBytes.Length -ge 3 -and $rawBytes[0] -eq 0xEF -and $rawBytes[1] -eq 0xBB -and $rawBytes[2] -eq 0xBF)
+        Assert (-not $hasUtf8Bom) "UTF-8 BOM must not be present: $($srcFile.Name)"
+        $utf8Strict = New-Object Text.UTF8Encoding($false, $true)
+        $decodedText = $utf8Strict.GetString($rawBytes)
+        Assert (([regex]::Matches($decodedText, "(?<!`r)`n")).Count -eq 0) "LF-only line endings found (must be CRLF): $($srcFile.Name)"
+    }
+    Write-Host '[PASS] Directory structure and UTF-8 (no BOM) + CRLF consistency'
 
     $extension = Join-Path $data 'extensions\ms-ceintl.vscode-language-pack-ja-1.0.0'
     [void][IO.Directory]::CreateDirectory((Join-Path $extension 'translations'))
@@ -70,7 +78,7 @@ try {
     function Invoke-RestMethod {
         return @{ assets = @(@{ name = 'MinGit-1.2.3-64-bit.zip'; digest = 'sha256:' + $script:fixtureHash; browser_download_url = 'https://fixture.invalid/git.zip' }) }
     }
-    . (Join-Path $modulesRoot 'Update-VSCodeOnline.ps1')
+    . ([scriptblock]::Create([IO.File]::ReadAllText((Join-Path $modulesRoot 'Update-VSCodeOnline.ps1'), [Text.Encoding]::UTF8)))
     # Restore only the downloader mock after loading the real ZIP helper.
     function Save-UrlToFile($Url, $DestinationPath) {
         [void][IO.Directory]::CreateDirectory((Split-Path -LiteralPath $DestinationPath))
@@ -214,8 +222,8 @@ try {
     Write-Host '[PASS] Multi-version Cline MCP exFAT fix (4.1.26/4.1.27/future/upstream) and MCP settings resilience'
 
     # 6. Verify unpinned MCP policy, local Edge resolver, and 4-component metadata
-    . (Join-Path $modulesRoot 'Get-PortableMetadata.ps1')
-    . (Join-Path $modulesRoot 'Install-FromLocalPackage.ps1')
+    . ([scriptblock]::Create([IO.File]::ReadAllText((Join-Path $modulesRoot 'Get-PortableMetadata.ps1'), [Text.Encoding]::UTF8)))
+    . ([scriptblock]::Create([IO.File]::ReadAllText((Join-Path $modulesRoot 'Install-FromLocalPackage.ps1'), [Text.Encoding]::UTF8)))
     $installEnvSource = [IO.File]::ReadAllText((Join-Path $modulesRoot 'Install-PortableEnvironment.ps1'), [Text.Encoding]::UTF8)
     $readmeSource = [IO.File]::ReadAllText((Join-Path $repoParent 'README.md'), [Text.Encoding]::UTF8)
     $startMcpSource = [IO.File]::ReadAllText((Join-Path $modulesRoot 'start-mcp.js'), [Text.Encoding]::UTF8)
@@ -246,16 +254,53 @@ try {
     Assert ($gitInstalled.ComparableVersion -eq '2.56.1.1') 'Get-InstalledPortableGitInfo comparable version mismatch'
     Assert (Test-ZipContainsMinGit $zip) 'Test-ZipContainsMinGit did not detect MinGit fixture archive'
     Write-Host '[PASS] Unpinned MCP policy, local Edge resolver, and 4-component update metadata'
+
+    # 7. Verify Windows KnownFolder (home\AppData\Local) creation & cross-drive terminal env isolation
+    Assert (Test-Path -LiteralPath (Join-Path $data 'home\AppData\Local') -PathType Container) 'home\AppData\Local was not created for Edge PathService(112)'
+    Assert (Test-Path -LiteralPath (Join-Path $data 'home\AppData\Roaming') -PathType Container) 'home\AppData\Roaming was not created'
+    Assert (Test-Path -LiteralPath (Join-Path $data 'home\AppData\LocalLow') -PathType Container) 'home\AppData\LocalLow was not created'
+    Assert (Test-Path -LiteralPath (Join-Path $data 'home\Downloads') -PathType Container) 'home\Downloads was not created'
+    Assert (Test-Path -LiteralPath (Join-Path $data 'home\Desktop') -PathType Container) 'home\Desktop was not created'
+
+    Remove-Item -LiteralPath (Join-Path $data 'home\AppData\Local') -Recurse -Force
+    $kfProbeCmd = '[Console]::OutputEncoding = [Text.Encoding]::UTF8; Write-Output ([Environment]::GetFolderPath("LocalApplicationData"))'
+    $kfEncoded  = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($kfProbeCmd))
+    $kfPsi      = New-Object Diagnostics.ProcessStartInfo
+    $kfPsi.FileName = Join-Path $PSHOME 'powershell.exe'
+    $kfPsi.Arguments = "-NoLogo -NoProfile -NonInteractive -EncodedCommand $kfEncoded"
+    $kfPsi.UseShellExecute = $false
+    $kfPsi.RedirectStandardOutput = $true
+    Set-PortableChildEnvironment -Info $kfPsi
+    Assert (Test-Path -LiteralPath (Join-Path $data 'home\AppData\Local') -PathType Container) 'Set-PortableChildEnvironment did not recreate home\AppData\Local'
+    Assert ($kfPsi.EnvironmentVariables['npm_config_update_notifier'] -eq 'false') 'npm_config_update_notifier not set to false'
+    $kfProc = [Diagnostics.Process]::Start($kfPsi)
+    try {
+        $kfResolved = ($kfProc.StandardOutput.ReadToEnd()).Trim()
+        [void]$kfProc.WaitForExit(10000)
+        Assert ($kfResolved -ieq (Join-Path $data 'home\AppData\Local')) "Child KnownFolder LocalApplicationData mismatch: $kfResolved"
+    }
+    finally { $kfProc.Dispose() }
+
+    $vsTermSettings = ([IO.File]::ReadAllText((Join-Path $data 'user-data\User\settings.json'), [Text.Encoding]::UTF8) | ConvertFrom-Json).'terminal.integrated.env.windows'
+    if ((Join-Path $data 'home') -match '^([A-Za-z]:)(\\.*)$') {
+        Assert ($vsTermSettings.HOMEDRIVE -ieq $Matches[1]) 'Terminal HOMEDRIVE not isolated'
+        Assert ($vsTermSettings.HOMEPATH  -ieq $Matches[2]) 'Terminal HOMEPATH not isolated'
+    }
+    Assert ($vsTermSettings.TMPDIR -eq (Join-Path $data 'tmp')) 'Terminal TMPDIR not isolated'
+    Write-Host '[PASS] Windows KnownFolder (PathService key 112) profile layout and cross-drive terminal isolation'
 }
 finally {
     # The target is the unique sandbox created above, never an application folder.
-    if ($sandbox -and (Split-Path -Leaf $sandbox) -like 'portable-tests-*' -and (Test-Path -LiteralPath $sandbox)) {
-        Remove-Item -LiteralPath $sandbox -Recurse -Force
+    if ($sandbox -and (Split-Path -Leaf $sandbox) -like 'portable-tests-*') {
+        $extSandbox = ConvertTo-ExtendedPath $sandbox
+        if ([IO.Directory]::Exists($extSandbox)) {
+            [IO.Directory]::Delete($extSandbox, $true)
+        }
     }
     if (-not $hadVSCode -and (Test-Path -LiteralPath $vscodeDir)) {
-        $remaining = @(Get-ChildItem -LiteralPath $vscodeDir -Recurse -File -Force -ErrorAction SilentlyContinue)
+        $remaining = @(Get-ChildItem -LiteralPath (ConvertTo-ExtendedPath $vscodeDir) -Recurse -File -Force -ErrorAction SilentlyContinue)
         if ($remaining.Count -eq 0) {
-            Remove-Item -LiteralPath $vscodeDir -Recurse -Force
+            [IO.Directory]::Delete((ConvertTo-ExtendedPath $vscodeDir), $true)
         }
     }
 }

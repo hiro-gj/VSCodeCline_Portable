@@ -156,7 +156,6 @@ try {
     }
 }
 catch {
-    Write-Progress -Id 10 -Activity 'ポータブル環境の準備' -Completed
     Write-Host "[エラー] $($_.Exception.Message)" -ForegroundColor Red
     exit 1
 }

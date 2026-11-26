@@ -15,6 +15,10 @@ Node.js の処理には VSCode 内蔵のランタイムを使用します。
 
 ## 使い方
 
+|1.初回インストール<br>※途中20倍速再生|2.次回以降の起動|
+|:--:|:--:|
+|https://github.com/user-attachments/assets/9ec0ba71-377f-46c3-a055-5e335aa2e657|https://github.com/user-attachments/assets/b5f0a597-4ed7-4d60-bb21-7698c29a13fa|
+
 1. USBデバイス等にこのリポジトリのソースZIPを展開します。
 2. `src` フォルダの `Start-VSCodeCline_Portable.cmd` を実行します。
 3. 不足する構成要素の導入と動作確認が完了すると、日本語で VSCode が起動します。

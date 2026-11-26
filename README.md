@@ -9,6 +9,7 @@ VSCode ZIP 版、日本語パック、Cline、ポータブル Git（MinGit）、
 - Windows（Windows PowerShell 5.1、tar.exe を使用）
 - 配置先フォルダへの書き込み権限（ショートカットを作成する親フォルダを含む）
 - 初回導入、不足する構成要素の追加、オンライン更新時のインターネット接続
+- 利用時ClineのLLMを動作させるAPIキー、ネットワーク接続。
 
 管理者権限や、別途インストールした Node.js / npm は不要です（ブラウザーにはローカル PC の Microsoft Edge を使用します）。
 Node.js の処理には VSCode 内蔵のランタイムを使用します。

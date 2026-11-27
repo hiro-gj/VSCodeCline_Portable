@@ -328,5 +328,12 @@ function Install-PortableEnvironment {
     finally {
         Complete-PortableStage
     }
-    Write-Host "[Ready] Portable VS Code / Japanese / Git / Cline / Playwright MCP: $root" -ForegroundColor Green
+    $gitReadyTag = if ($null -ne $script:PortableGitState -and $script:PortableGitState.Mode -eq 'Host') {
+        'Host-Git (isolated)'
+    } elseif ($null -ne $script:PortableGitState -and $script:PortableGitState.Mode -eq 'Unavailable') {
+        'Git-Unavailable (policy)'
+    } else {
+        'Git'
+    }
+    Write-Host "[Ready] Portable VS Code / Japanese / $gitReadyTag / Cline / Playwright MCP: $root" -ForegroundColor Green
 }

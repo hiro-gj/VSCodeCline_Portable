@@ -215,8 +215,12 @@ function Update-PortableVSCodeTerminalSettings {
     Set-PortableProperty $termEnv 'GCM_CREDENTIAL_STORE' $credStore
     Set-PortableProperty $termEnv 'GCM_DPAPI_STORE_PATH' $paths.GcmDpapiStore
     Set-PortableProperty $termEnv 'GH_CONFIG_DIR'        $paths.GhConfigDir
-    if (Test-Path -LiteralPath $paths.GitSshExe -PathType Leaf) {
-        Set-PortableProperty $termEnv 'GIT_SSH'          $paths.GitSshExe
+    $effectiveSsh = Get-PortableEffectiveSshCommandPath $paths
+    if ($effectiveSsh) {
+        Set-PortableProperty $termEnv 'GIT_SSH'          $effectiveSsh
+    }
+    else {
+        Set-PortableProperty $termEnv 'GIT_SSH'          $null
     }
     Set-PortableProperty $termEnv 'OneDrive'             $null
     Set-PortableProperty $termEnv 'OneDriveConsumer'     $null

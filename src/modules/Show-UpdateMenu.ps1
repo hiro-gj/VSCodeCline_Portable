@@ -12,7 +12,15 @@ function Show-UpdateMenu {
         $mcpVer = Get-InstalledPlaywrightMcpVersion
         $mcpLabel = if ($mcpVer) { $mcpVer } else { '未インストール' }
         $gitInfo = Get-InstalledPortableGitInfo
-        $gitLabel = if ($gitInfo) { $gitInfo.Version } else { '未インストール' }
+        $gitLabel = if ($gitInfo) {
+            if ($null -ne $script:PortableGitState -and $script:PortableGitState.Mode -eq 'Host') {
+                "$($gitInfo.Version) (このPCではホストGitへ自動フォールバック中)"
+            } else {
+                $gitInfo.Version
+            }
+        } else {
+            '未インストール'
+        }
         Write-Host ''
         Write-Host '============================================================'
         Write-Host '  アップデート管理 (VSCode / Cline / Playwright MCP / Git)'

@@ -25,10 +25,11 @@ if ([Console]::IsOutputRedirected) {
 }
 $ErrorActionPreference = 'Stop'
 
-# 通常版からの設定引き継ぎ（Copy-Optional.ps1）・ローカル Edge 検出用にホスト環境変数を退避
+# 通常版からの設定引き継ぎ（Copy-Optional.ps1）・ローカル Edge / ホスト Git 検出用にホスト環境変数を退避
 $script:HostUserProfile  = $env:USERPROFILE
 $script:HostAppData      = $env:APPDATA
 $script:HostLocalAppData = $env:LOCALAPPDATA
+$script:HostPath         = $env:PATH
 
 $sourceRoot  = Split-Path -LiteralPath $env:PORTABLE_LAUNCH_SELF
 $modulesRoot = Join-Path $sourceRoot 'modules'

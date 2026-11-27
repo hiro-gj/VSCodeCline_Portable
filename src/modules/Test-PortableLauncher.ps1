@@ -84,27 +84,40 @@ try {
         [void][IO.Directory]::CreateDirectory((Split-Path -LiteralPath $DestinationPath))
         [IO.File]::Copy($zip, $DestinationPath, $true)
     }
-    # Intercept native execution in this test; the live smoke test uses git.exe.
-    function git.exe { $global:LASTEXITCODE = 0; return 'git version fixture' }
-    $installText = (Get-Command Install-PortableGit).Definition
-    $installText = $installText.Replace('& $stagedExe --version', 'git.exe --version').Replace('& $gitExe --version', 'git.exe --version')
-    $install = [scriptblock]::Create($installText)
-    & $install
-    Assert (Test-Path -LiteralPath (Join-Path $data 'tools\git\cmd\git.exe')) 'Git was not installed'
-    $info = New-Object Diagnostics.ProcessStartInfo
-    $originalPath = $env:PATH
-    Set-PortableGitEnvironment $info
-    Assert ($info.EnvironmentVariables['PATH'].StartsWith((Join-Path $data 'tools\git\cmd') + ';')) 'Child PATH was not configured'
-    Assert ($env:PATH -ceq $originalPath) 'Parent PATH was changed'
-    function Invoke-RestMethod { throw 'An existing installation must not access the network' }
-    & $install
-    $data = Join-Path $sandbox 'bad-hash-data'
-    function Invoke-RestMethod { return @{ assets = @(@{ name = 'MinGit-1.2.3-64-bit.zip'; digest = 'sha256:' + ('0' * 64); browser_download_url = 'https://fixture.invalid/git.zip' }) } }
-    $rejected = $false
-    try { & $install } catch { $rejected = $_.Exception.Message -like '*SHA-256*' }
-    Assert $rejected 'Invalid Git hash was not rejected'
-    Assert (-not (Test-Path -LiteralPath (Join-Path $data 'tools\git\cmd\git.exe'))) 'Invalid Git archive was installed'
-    Write-Host '[PASS] Git: ZIP install, child-only PATH, offline reuse, SHA-256 rejection'
+    # Intercept native execution in this test using DI probe handler; the live smoke test uses git.exe.
+    $script:PortableGitProbeHandler = {
+        param([string]$ExePath, [int]$Attempts)
+        return [pscustomobject]@{
+            Success           = $true
+            Version           = 'git version fixture'
+            ExitCode          = 0
+            Win32ErrorCode    = 0
+            IsPolicyBlocked   = $false
+            DiagnosticMessage = ''
+        }
+    }
+    try {
+        Install-PortableGit
+        Assert (Test-Path -LiteralPath (Join-Path $data 'tools\git\cmd\git.exe')) 'Git was not installed'
+        $info = New-Object Diagnostics.ProcessStartInfo
+        $originalPath = $env:PATH
+        Set-PortableGitEnvironment $info
+        Assert ($info.EnvironmentVariables['PATH'].StartsWith((Join-Path $data 'tools\git\cmd') + ';')) 'Child PATH was not configured'
+        Assert ($env:PATH -ceq $originalPath) 'Parent PATH was changed'
+        function Invoke-RestMethod { throw 'An existing installation must not access the network' }
+        Install-PortableGit
+        $data = Join-Path $sandbox 'bad-hash-data'
+        function Invoke-RestMethod { return @{ assets = @(@{ name = 'MinGit-1.2.3-64-bit.zip'; digest = 'sha256:' + ('0' * 64); browser_download_url = 'https://fixture.invalid/git.zip' }) } }
+        $rejected = $false
+        try { Install-PortableGit } catch { $rejected = $_.Exception.Message -like '*SHA-256*' }
+        Assert $rejected 'Invalid Git hash was not rejected'
+        Assert (-not (Test-Path -LiteralPath (Join-Path $data 'tools\git\cmd\git.exe'))) 'Invalid Git archive was installed'
+        Write-Host '[PASS] Git: ZIP install, child-only PATH, offline reuse, SHA-256 rejection'
+    }
+    finally {
+        $script:PortableGitProbeHandler = $null
+        $script:PortableGitState        = $null
+    }
 
     # 4. Verify portable isolation, global rules deployment, legacy cline migration, child env
     $sandboxData = Join-Path $sandbox 'data'
@@ -343,6 +356,68 @@ try {
     finally {
         $env:PORTABLE_FORCE_PROGRESS = $null
         $script:PortableProgressHandler = $null; $global:progressEvents = $null
+    }
+
+    # 9. Verify Code Integrity policy block (0xC0E90002 / Win32 4551) fallback to host Git, OpenSSH isolation, and graceful degradation
+    Assert (Test-CodeIntegrityBlockedCode -ExitCode -1058471934 -Win32ErrorCode 0) '0xC0E90002 was not recognized as policy block'
+    Assert (Test-CodeIntegrityBlockedCode -ExitCode 0 -Win32ErrorCode 4551) 'Win32 error 4551 was not recognized as policy block'
+    Assert (-not (Test-CodeIntegrityBlockedCode -ExitCode 1 -Win32ErrorCode 0)) 'Generic exit code 1 should not be treated as policy block'
+    $diagHex = Format-ExecutableBlockDiagnostic -ExitCode -1058471934 -Win32ErrorCode 0 -ErrorMessage ''
+    Assert ($diagHex.Contains('0xC0E90002')) "Expected 0xC0E90002 in diagnostic, got: $diagHex"
+
+    $mockHostBase = Join-Path $testTmpBase ('mock-host-git-' + [guid]::NewGuid().ToString('N'))
+    $mockHostDir  = Join-Path $mockHostBase 'cmd'
+    [void][IO.Directory]::CreateDirectory($mockHostDir)
+    $mockHostGit  = Join-Path $mockHostDir 'git.exe'
+    [IO.File]::WriteAllText($mockHostGit, 'host-git-fixture', (New-Object Text.UTF8Encoding($false)))
+
+    $savedHostPath = $script:HostPath
+    $script:HostPath = $mockHostDir
+    $script:PortableSignatureCheckHandler = { param([string]$Path) return $true }
+    $script:PortableGitProbeHandler = {
+        param([string]$ExePath, [int]$Attempts)
+        if ($ExePath -ieq $mockHostGit) {
+            return [pscustomobject]@{ Success = $true; Version = 'git version 2.56.1.windows.1'; ExitCode = 0; Win32ErrorCode = 0; IsPolicyBlocked = $false; DiagnosticMessage = '' }
+        }
+        return [pscustomobject]@{ Success = $false; Version = ''; ExitCode = -1058471934; Win32ErrorCode = 0; IsPolicyBlocked = $true; DiagnosticMessage = 'ExitCode=0xC0E90002 (-1058471934)' }
+    }
+    try {
+        Resolve-PortableGitRuntime
+        Initialize-PortableGitConfig
+        Initialize-PortableSshShims
+        Assert ($script:PortableGitState.Mode -eq 'Host') "Expected Host mode, got: $($script:PortableGitState.Mode)"
+        Assert ($script:PortableGitState.GitExe -ieq $mockHostGit) 'Host Git executable mismatch'
+
+        $fbPsi = New-Object Diagnostics.ProcessStartInfo
+        Set-PortableChildEnvironment -Info $fbPsi -IncludeGitPath
+        Assert ($fbPsi.EnvironmentVariables['PATH'].StartsWith($mockHostDir + ';')) 'Host Git cmd dir not prepended to PATH'
+        Assert (-not $fbPsi.EnvironmentVariables['PATH'].StartsWith((Join-Path $data 'tools\git\cmd') + ';')) 'Blocked portable git dir must not be prepended'
+        if (Get-LocalOpenSshDirectory) {
+            $gitSshWrapper = Join-Path $data 'tools\bin\git-ssh.cmd'
+            Assert (Test-Path -LiteralPath $gitSshWrapper -PathType Leaf) 'System OpenSSH wrapper git-ssh.cmd was not generated'
+            $wrapperText = [IO.File]::ReadAllText($gitSshWrapper, [Text.Encoding]::UTF8)
+            Assert ($wrapperText.Contains('UserKnownHostsFile=')) 'System OpenSSH wrapper must isolate UserKnownHostsFile'
+            Assert ($fbPsi.EnvironmentVariables['GIT_SSH'] -ieq $gitSshWrapper) 'GIT_SSH was not switched to system OpenSSH wrapper'
+        }
+
+        # Both portable and host Git unavailable -> graceful degradation without throwing
+        $script:HostPath = Join-Path $sandbox 'empty-host-path'
+        $script:PortableSignatureCheckHandler = { param([string]$Path) return $false }
+        Resolve-PortableGitRuntime
+        Assert ($script:PortableGitState.Mode -eq 'Unavailable') "Expected Unavailable mode, got: $($script:PortableGitState.Mode)"
+        $degPsi = New-Object Diagnostics.ProcessStartInfo
+        Set-PortableChildEnvironment -Info $degPsi -IncludeGitPath
+        Assert (-not $degPsi.EnvironmentVariables['PATH'].Contains((Join-Path $data 'tools\git\cmd'))) 'Unavailable mode must exclude blocked portable git path'
+        Write-Host '[PASS] Code Integrity (0xC0E90002) host Git fallback, OpenSSH isolation, and graceful degradation'
+    }
+    finally {
+        if (Test-Path -LiteralPath $mockHostBase) {
+            Remove-Item -LiteralPath $mockHostBase -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        $script:HostPath                      = $savedHostPath
+        $script:PortableSignatureCheckHandler = $null
+        $script:PortableGitProbeHandler       = $null
+        $script:PortableGitState              = $null
     }
 }
 finally {

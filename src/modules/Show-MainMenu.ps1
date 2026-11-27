@@ -12,7 +12,15 @@ function Show-MainMenu {
         $mcpMainVer = Get-InstalledPlaywrightMcpVersion
         $mcpMainLabel = if ($mcpMainVer) { $mcpMainVer } else { '未インストール' }
         $gitMainInfo = Get-InstalledPortableGitInfo
-        $gitMainLabel = if ($gitMainInfo) { "$($gitMainInfo.Version) ($data\tools\git\cmd\git.exe)" } else { "未インストール ($data\tools\git\cmd\git.exe)" }
+        $gitMainLabel = if ($null -ne $script:PortableGitState -and $script:PortableGitState.Mode -eq 'Host') {
+            "$($script:PortableGitState.Version) [ホストGit自動連携: $($script:PortableGitState.GitExe)]"
+        } elseif ($null -ne $script:PortableGitState -and $script:PortableGitState.Mode -eq 'Unavailable') {
+            '利用不可 (Windows セキュリティポリシー等により制限中)'
+        } elseif ($gitMainInfo) {
+            "$($gitMainInfo.Version) ($data\tools\git\cmd\git.exe)"
+        } else {
+            "未インストール ($data\tools\git\cmd\git.exe)"
+        }
         Write-Host ''
         Write-Host '============================================================'
         Write-Host '  VSCode ポータブルモード ランチャー & セットアップ'

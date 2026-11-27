@@ -194,11 +194,10 @@ function Get-InstalledPortableGitInfo {
         catch {}
     }
     if (-not $rawVersion) {
-        try {
-            $out = & $gitExe --version 2>$null
-            if ($LASTEXITCODE -eq 0 -and $out) { $rawVersion = ([string]($out | Select-Object -First 1)).Trim() }
+        $verProbe = Invoke-GitExecutableProbe -GitExePath $gitExe -MaxAttempts 1
+        if ($verProbe.Success -and $verProbe.Version) {
+            $rawVersion = $verProbe.Version
         }
-        catch {}
     }
     $display = if ($rawVersion) { $rawVersion -replace '^(?i)git\s+version\s+', '' } elseif ($assetName) { $assetName } else { '導入済み' }
     $verSource = if ($rawVersion) { $rawVersion } else { $assetName }
